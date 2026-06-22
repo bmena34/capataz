@@ -126,4 +126,4 @@ capataz uninstall   # removes hooks + the launchd daemon
 
 ## License
 
-[MIT](LICENSE) © Brandon Mena
+[MIT](LICENSE)
