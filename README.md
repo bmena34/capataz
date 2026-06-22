@@ -7,8 +7,6 @@
   it surfaces which agent needs you and lets you switch to, reply to, rename, or kill any session.
 </p>
 
-<p align="center"><em>capataz</em> is Spanish for <em>foreman</em> — it keeps the crew of agents in line.</p>
-
 <!-- Save a dashboard screenshot to docs/screenshot.png and uncomment:
 <p align="center"><img src="docs/screenshot.png" alt="capataz dashboard" width="340"></p>
 -->
