@@ -126,6 +126,27 @@ func gracefulExit(pane string) error {
 	return nil
 }
 
+// windowWidthAndPanes returns the column width of the window containing pane and
+// how many panes that window has.
+func windowWidthAndPanes(pane string) (width, panes int) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", pane, "#{window_width}\t#{window_panes}").Output()
+	if err != nil {
+		return 0, 0
+	}
+	p := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
+	if len(p) != 2 {
+		return 0, 0
+	}
+	w, _ := strconv.Atoi(p[0])
+	n, _ := strconv.Atoi(p[1])
+	return w, n
+}
+
+// pinPaneWidth resizes pane to width columns (best effort; tmux clamps).
+func pinPaneWidth(pane string, width int) {
+	_ = exec.Command("tmux", "resize-pane", "-t", pane, "-x", strconv.Itoa(width)).Run()
+}
+
 // currentWindow returns the window id the attached client is currently showing.
 func currentWindow() string {
 	out, err := exec.Command("tmux", "display-message", "-p", "#{window_id}").Output()

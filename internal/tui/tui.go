@@ -74,6 +74,11 @@ type model struct {
 	// selecting a session switches to it and closes the popup. When false the
 	// dashboard is a persistent sidebar pane and selecting never quits it.
 	popup bool
+	// lastWinWidth/desiredWidth keep the sidebar a fixed width across window
+	// resizes (tmux otherwise scales it proportionally). desiredWidth starts at
+	// the config width and updates when the user manually resizes the pane.
+	lastWinWidth int
+	desiredWidth int
 }
 
 // Run starts the dashboard. It blocks until the user quits.
@@ -153,6 +158,35 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(waitForMsg(m.msgCh), tick())
 }
 
+// pinSidebar keeps a docked sidebar at a fixed width. On a *window* resize it
+// restores the pane to its desired width (so shrinking the terminal squeezes
+// the work pane, not the sidebar); when the user manually resizes the pane (the
+// window width is unchanged) it remembers that new width instead. No-op in popup
+// mode or when the dashboard is the only pane in its window.
+func (m *model) pinSidebar() {
+	if m.popup {
+		return
+	}
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return
+	}
+	ww, panes := windowWidthAndPanes(pane)
+	if ww == 0 || panes < 2 {
+		m.lastWinWidth = ww // not docked — nothing to pin against
+		return
+	}
+	if m.desiredWidth == 0 {
+		m.desiredWidth = conf().Sidebar.Width
+	}
+	if ww != m.lastWinWidth { // window resized → restore the fixed width
+		m.lastWinWidth = ww
+		pinPaneWidth(pane, m.desiredWidth)
+	} else { // same window, our pane changed → user resized it; remember
+		m.desiredWidth = m.width
+	}
+}
+
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
@@ -162,6 +196,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.layoutModal()
+		m.pinSidebar()
 		return m, nil
 
 	case tickMsg:
