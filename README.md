@@ -7,9 +7,9 @@
   it surfaces which agent needs you and lets you switch to, reply to, rename, or kill any session.
 </p>
 
-<!-- Save a dashboard screenshot to docs/screenshot.png and uncomment:
-<p align="center"><img src="docs/screenshot.png" alt="capataz dashboard" width="340"></p>
--->
+<p align="center">
+  <img src="docs/screenshot.png" alt="capataz dashboard docked beside a live Claude Code session" width="820">
+</p>
 
 ## Why
 
@@ -53,6 +53,11 @@ capataz statusline       # optional: show a "needs you" badge in your tmux statu
 - **`prefix + g`** — open the dashboard as a floating popup (a switcher). Pick a session with `Enter` and it switches you there.
 - **`prefix + a`** — dock the dashboard as a sidebar in the current window. `Ctrl+h`/`Ctrl+l` move between the sidebar and your work.
 - **`n`** — spawn a new Claude session (prompts for directory, then name); it comes up with its own sidebar.
+
+<p align="center">
+  <img src="docs/popup.png" alt="capataz popup switcher over a session" width="820">
+  <br><sub>the popup switcher (<code>prefix + g</code>)</sub>
+</p>
 
 Keys inside the dashboard:
 
