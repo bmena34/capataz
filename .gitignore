@@ -1,0 +1,10 @@
+# compiled binary (same name as the module dir)
+/capataz
+
+# goreleaser output
+/dist/
+
+# settings backups capataz writes during install
+*.bak
+
+.DS_Store
