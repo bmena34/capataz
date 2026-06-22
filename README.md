@@ -1,11 +1,16 @@
-# capataz
+<p align="center">
+  <img src="docs/logo.svg" alt="capataz" width="600">
+</p>
 
-A terminal dashboard for supervising your [Claude Code](https://claude.com/claude-code) agents running in tmux. It surfaces which agent needs you — a permission prompt, a question, an error, or just finished — and lets you switch to, reply to, rename, or kill any session without leaving your workflow.
+<p align="center">
+  A terminal dashboard for supervising your <a href="https://claude.com/claude-code">Claude&nbsp;Code</a> agents in tmux —<br>
+  it surfaces which agent needs you and lets you switch to, reply to, rename, or kill any session.
+</p>
 
-`capataz` is Spanish for *foreman* — it keeps the crew of agents in line.
+<p align="center"><em>capataz</em> is Spanish for <em>foreman</em> — it keeps the crew of agents in line.</p>
 
-<!-- Save a screenshot to docs/screenshot.png and uncomment:
-![capataz dashboard](docs/screenshot.png)
+<!-- Save a dashboard screenshot to docs/screenshot.png and uncomment:
+<p align="center"><img src="docs/screenshot.png" alt="capataz dashboard" width="340"></p>
 -->
 
 ## Why

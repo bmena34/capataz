@@ -1,0 +1,29 @@
+<svg width="760" height="200" viewBox="0 0 760 200" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="capataz">
+  <defs>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5c2e7"/>
+      <stop offset="1" stop-color="#cba6f7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- terminal card -->
+  <rect x="8" y="8" width="744" height="184" rx="18" fill="#11111b" stroke="#313244" stroke-width="1.5"/>
+
+  <!-- traffic lights / session states -->
+  <circle cx="40" cy="42" r="6.5" fill="#f38ba8"/>
+  <circle cx="64" cy="42" r="6.5" fill="#fab387"/>
+  <circle cx="88" cy="42" r="6.5" fill="#a6e3a1"/>
+
+  <!-- "needs you" flag badge -->
+  <text x="716" y="50" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="26" fill="#cba6f7">&#9873;</text>
+
+  <!-- wordmark -->
+  <text x="380" y="126" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="74" font-weight="700" letter-spacing="-1">
+    <tspan fill="#a6e3a1">&#8250;&#160;</tspan><tspan fill="url(#wordmark)">capataz</tspan>
+  </text>
+  <!-- cursor block -->
+  <rect x="566" y="98" width="20" height="34" rx="3" fill="#cba6f7" opacity="0.9"/>
+
+  <!-- subtitle -->
+  <text x="380" y="164" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" fill="#6c7086">foreman for your Claude&#160;Code agents in tmux</text>
+</svg>
