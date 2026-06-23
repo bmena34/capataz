@@ -646,11 +646,12 @@ func (m model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.newHint = ""
 			return m, nil
 		}
-		// naming step → spawn.
+		// naming step → spawn. Creating a new session only needs tmux to be
+		// reachable — not a current pane (a display-popup has no $TMUX_PANE).
 		name := m.input.Value()
 		m.mode = modeNormal
 		m.input.Blur()
-		if !inTmux() {
+		if os.Getenv("TMUX") == "" {
 			m.status = "can't spawn: capataz isn't in tmux"
 			return m, nil
 		}
