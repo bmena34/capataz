@@ -12,26 +12,37 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bmena34/capataz/internal/issues"
+	"github.com/bmena34/capataz/internal/worktree"
 )
 
 // syncSelectedIssues keeps the cached backlog (issueList) pointed at the
 // selected session's repo. It reloads from disk when the selection moves to a
-// different repo, or always when force is set — the periodic tick forces a
+// different cwd, or always when force is set — the periodic tick forces a
 // reload to pick up claim/resolve edits agents make on disk. Reads are cheap
 // (one .scratch tree) and happen here, off the render path, so the inline
 // sidebar panel and the modal both render from the cache without scanning.
+//
+// The scan root (issueRepo) is the selected cwd resolved to its primary git
+// checkout, so a session running in a linked worktree still shows (and starts
+// work against) the shared backlog in the primary. That resolution shells out
+// to git, so it runs only when the cwd actually changes — never per tick.
 func (m *model) syncSelectedIssues(force bool) {
 	sel, ok := m.current()
 	if !ok {
-		m.issueRepo, m.issueRepoName, m.issueList = "", "", nil
+		m.issueCwd, m.issueRepo, m.issueRepoName, m.issueList = "", "", "", nil
 		return
 	}
-	if sel.Cwd != m.issueRepo {
-		m.issueRepo = sel.Cwd
-		m.issueRepoName = short(sel.Cwd)
+	if sel.Cwd != m.issueCwd {
+		m.issueCwd = sel.Cwd
+		repo := sel.Cwd
+		if p, err := worktree.PrimaryCheckout(sel.Cwd); err == nil {
+			repo = p // scope the backlog to the primary checkout
+		}
+		m.issueRepo = repo
+		m.issueRepoName = short(repo)
 		m.issueCursor = 0
 	} else if !force {
-		return // same repo and no forced refresh: keep the cache
+		return // same cwd and no forced refresh: keep the cache
 	}
 	m.loadIssues()
 }
@@ -271,6 +282,10 @@ func (m model) issuesPopup(base string) string {
 				footerStyle.Render(" · R for a fresh review · Esc close")
 		}
 	}
+	if adv := parallelSafeAdvisory(m.issueList); adv != "" {
+		help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(adv) +
+			footerStyle.Render(" · ") + help
+	}
 	title := "Issues · " + m.issueRepoName
 
 	var body string
@@ -381,6 +396,13 @@ func (m model) issuePanelBody(rows int) string {
 		counts[issues.Bucket(iss)]++
 	}
 	lines := []string{issueSummary(counts)}
+	// Advisory parallel-safe line, only when it fits (summary + advisory + at
+	// least one issue row). Cache-only via parallelSafeAdvisory.
+	if rows >= 3 {
+		if adv := parallelSafeAdvisory(m.issueList); adv != "" {
+			lines = append(lines, " "+lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(adv))
+		}
+	}
 
 	sorted := make([]issues.Issue, len(m.issueList))
 	copy(sorted, m.issueList)
@@ -388,7 +410,10 @@ func (m model) issuePanelBody(rows int) string {
 		return bucketOrder[issues.Bucket(sorted[i])] < bucketOrder[issues.Bucket(sorted[j])]
 	})
 
-	avail := rows - 1 // the summary took one row
+	avail := rows - len(lines) // header lines (summary + optional advisory) taken
+	if avail < 0 {
+		avail = 0
+	}
 	overflow := len(sorted) > avail
 	show := avail
 	if overflow {
@@ -407,6 +432,42 @@ func (m model) issuePanelBody(rows int) string {
 		lines = append(lines, dimStyle.Render(fmt.Sprintf("  … +%d more · prefix+g to work", len(sorted)-show)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// parallelSafeAdvisory returns a short, read-only advisory naming the ready
+// issues that can currently run in parallel — the largest wave of pairwise
+// file-disjoint, mutually-unblocked "todo" issues (issues.ParallelSafe). It
+// reads only the passed cache slice (never the filesystem) and returns "" when
+// no two ready issues are safe together, so callers can omit the line. Numbers
+// are capped so the string can't blow past the panel width.
+func parallelSafeAdvisory(list []issues.Issue) string {
+	waves := issues.ParallelSafe(list)
+	var best []issues.Issue
+	for _, w := range waves {
+		if len(w) > len(best) {
+			best = w
+		}
+	}
+	if len(best) < 2 {
+		return "" // nothing worth advising
+	}
+	const maxShow = 6
+	var nums []string
+	for _, iss := range best {
+		num := iss.Num
+		if num == "" {
+			num = "--"
+		}
+		nums = append(nums, num)
+		if len(nums) >= maxShow {
+			break
+		}
+	}
+	label := strings.Join(nums, ", ")
+	if len(best) > maxShow {
+		label += fmt.Sprintf(" +%d", len(best)-maxShow)
+	}
+	return "⇉ parallel-safe: " + label
 }
 
 // issueSummary is the colored counts line, e.g. "3 todo · 1 blocked · 2 done".

@@ -16,10 +16,13 @@ func TestRenderNoPanic(t *testing.T) {
 	m.limits = proto.Usage{OK: true, SessionPct: 61, WeeklyPct: 8}
 	// A cached backlog so the inline sidebar Issues panel is exercised too.
 	m.issueRepoName = "proj"
+	// Two ready issues with disjoint Touches so the parallel-safe advisory line
+	// renders in the sidebar tracker across all sizes.
 	m.issueList = []issues.Issue{
-		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent"},
+		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent", Touches: []string{"internal/tui/a.go"}},
 		{Feature: "login", Num: "02", Title: "Blocked slice", Status: "ready-for-agent", Blocked: true},
 		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved"},
+		{Feature: "billing", Num: "03", Title: "Store schema", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}},
 	}
 	for w := 1; w <= 80; w++ {
 		for h := 1; h <= 50; h++ {
@@ -41,10 +44,11 @@ func TestRenderNoPanic(t *testing.T) {
 func TestRenderNoPanicIssueViews(t *testing.T) {
 	m := model{issueRepoName: "proj"}
 	m.issueList = []issues.Issue{
-		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent"},
+		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent", Touches: []string{"internal/tui/a.go"}},
 		{Feature: "login", Num: "02", Title: "Wire up session cookies", Status: "claimed"},
 		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved"},
 		{Feature: "billing", Num: "02", Title: "Blocked slice", Status: "ready-for-agent", Blocked: true},
+		{Feature: "billing", Num: "03", Title: "Store schema", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}},
 	}
 	m.startIssue = m.issueList[0]
 	// cursor 2 = the resolved "billing" issue, exercising the all-resolved footer.

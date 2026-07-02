@@ -281,6 +281,131 @@ func TestBucket(t *testing.T) {
 	}
 }
 
+func TestParseTouches(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"internal/issues/issues.go, internal/tui/", []string{"internal/issues/issues.go", "internal/tui"}},
+		{"  foo.go ,, bar.go  ", []string{"foo.go", "bar.go"}},
+		{"./internal/tui/", []string{"internal/tui"}},
+		{"None", nil},
+		{"", nil},
+		{"   ", nil},
+	}
+	for _, c := range cases {
+		got := parsePaths(c.in)
+		if strings.Join(got, "|") != strings.Join(c.want, "|") {
+			t.Errorf("parsePaths(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestTouchesHeaderParsed(t *testing.T) {
+	repo := t.TempDir()
+	writeIssue(t, repo, "f", "01-x.md", "# X\n\nStatus: ready-for-agent\nTouches: internal/tui/, foo.go\n")
+	feats, _ := Scan(repo)
+	got := feats[0].Issues[0].Touches
+	if strings.Join(got, "|") != "internal/tui|foo.go" {
+		t.Errorf("Touches = %v", got)
+	}
+}
+
+func TestPathsOverlap(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"internal/tui", "internal/tui", true},                        // equal
+		{"internal/tui", "internal/tui/issues.go", true},              // dir prefixes file
+		{"internal/tui/issues.go", "internal/tui", true},              // symmetric
+		{"internal/t", "internal/tui", false},                         // NOT a segment prefix
+		{"internal/tui", "internal/tui2", false},                      // sibling, not prefix
+		{"internal/issues/issues.go", "internal/tui/issues.go", false}, // different dirs
+		{"internal/tui/", "internal/tui/issues.go", true},             // trailing slash normalized
+		{"./foo.go", "foo.go", true},                                  // leading ./ normalized
+	}
+	for _, c := range cases {
+		if got := PathsOverlap(c.a, c.b); got != c.want {
+			t.Errorf("PathsOverlap(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestParallelSafe(t *testing.T) {
+	// 01 & 03 touch disjoint files, no blocking edge -> same wave.
+	// 02 overlaps 01 (both touch internal/tui) -> own wave.
+	// 04 has no Touches -> singleton (unknown scope overlaps everything).
+	// 05 is claimed (not "todo") -> excluded entirely.
+	// 06 blocked-by 01 with disjoint files -> still cannot share 01's wave.
+	list := []Issue{
+		{Num: "01", Status: "ready-for-agent", Touches: []string{"internal/tui/a.go"}},
+		{Num: "02", Status: "ready-for-agent", Touches: []string{"internal/tui/b.go", "internal/tui"}},
+		{Num: "03", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}},
+		{Num: "04", Status: "ready-for-agent"},
+		{Num: "05", Status: "claimed", Touches: []string{"internal/x/y.go"}},
+		{Num: "06", Status: "ready-for-agent", Touches: []string{"cmd/main.go"}, BlockedBy: []string{"01"}},
+	}
+	waves := ParallelSafe(list)
+
+	// 05 (claimed) must not appear anywhere.
+	for _, w := range waves {
+		for _, iss := range w {
+			if iss.Num == "05" {
+				t.Fatalf("claimed issue 05 must not appear in waves")
+			}
+		}
+	}
+
+	// The first wave should pair 01 with 03 (disjoint, no edge) — but NOT 02 (overlap)
+	// and NOT 06 (blocking edge to 01).
+	want := map[string]bool{"01": true, "03": true}
+	got := map[string]bool{}
+	for _, iss := range waves[0] {
+		got[iss.Num] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("wave[0] = %v, want {01,03}", got)
+	}
+	for n := range want {
+		if !got[n] {
+			t.Errorf("wave[0] missing %s: %v", n, got)
+		}
+	}
+
+	// 02 (overlap with 01) and 06 (blocked by 01) must each be in a wave without 01.
+	for _, n := range []string{"02", "06"} {
+		for _, w := range waves {
+			hasN, has01 := false, false
+			for _, iss := range w {
+				if iss.Num == n {
+					hasN = true
+				}
+				if iss.Num == "01" {
+					has01 = true
+				}
+			}
+			if hasN && has01 {
+				t.Errorf("%s must not share a wave with 01", n)
+			}
+		}
+	}
+}
+
+func TestParallelSafeEmptyTouchesNeverPairs(t *testing.T) {
+	// Two ready issues, one with unknown scope — they must never be paired.
+	list := []Issue{
+		{Num: "01", Status: "ready-for-agent"},
+		{Num: "02", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}},
+	}
+	waves := ParallelSafe(list)
+	for _, w := range waves {
+		if len(w) > 1 {
+			t.Errorf("empty-Touches issue must not be parallel-safe with others: %v", w)
+		}
+	}
+}
+
 func TestNonNumberedFile(t *testing.T) {
 	repo := t.TempDir()
 	writeIssue(t, repo, "f", "notes.md", "# Some notes\n\nStatus: ready-for-agent\n")

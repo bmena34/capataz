@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bmena34/capataz/internal/worktree"
 )
 
 // Run is the `capataz issue …` subcommand: the small CLI the capataz-work skill
@@ -82,6 +84,12 @@ func create(feature, title string, flags []string) error {
 	repo := flagValue(flags, "--repo")
 	if repo == "" {
 		repo = "."
+	}
+	// The backlog lives in the primary checkout, so a `new` run from inside a
+	// linked worktree still writes to the shared backlog. A plain repo is its
+	// own primary (behavior-preserving); on any git error keep repo as-is.
+	if p, err := worktree.PrimaryCheckout(repo); err == nil {
+		repo = p
 	}
 	typ := flagValue(flags, "--type")
 	if typ == "" {

@@ -89,9 +89,15 @@ type model struct {
 
 	// Issue view (modeIssues): the backlog of the selected session's repo,
 	// flattened across features in feature+number order, and a cursor into it.
-	// issueRepo/issueRepoName are the cwd scanned and its display name.
+	// issueCwd is the selected session's raw cwd, cached to detect when the
+	// selection moves to a different directory. issueRepo is that cwd resolved to
+	// its primary git checkout (where the .scratch backlog lives — so a session
+	// running in a linked worktree still shows the shared backlog); issueRepoName
+	// is its display name. The primary is resolved (a git subprocess) only when
+	// issueCwd changes, never per tick or on the render path.
 	issueList     []issues.Issue
 	issueCursor   int
+	issueCwd      string
 	issueRepo     string
 	issueRepoName string
 	// startIssue/startPane back the start-work chooser (modeStartWork): the issue

@@ -11,6 +11,7 @@
 //	Status: ready-for-agent        # triage state, or claimed/resolved (wayfinder)
 //	Type: task                     # research | prototype | grilling | task
 //	Blocked by: 01, 03             # issue numbers in the same feature
+//	Touches: internal/tui/, foo.go # repo-relative files/dirs the issue edits
 //
 // Unknown lines are ignored, and a missing .scratch/ directory is not an error.
 package issues
@@ -36,6 +37,7 @@ type Issue struct {
 	Type      string   // Type: line, lowercased ("" if absent)
 	BlockedBy []string // Blocked by: issue numbers in the same feature
 	Blocked   bool     // true if any blocker is not yet resolved
+	Touches   []string // Touches: repo-relative files/dirs the issue edits (nil = unknown scope)
 	Path      string   // absolute path to the markdown file
 }
 
@@ -77,7 +79,7 @@ func Bucket(iss Issue) string {
 
 var (
 	fileRe   = regexp.MustCompile(`^(\d+)-(.+)\.md$`)
-	headerRe = regexp.MustCompile(`(?i)^(status|type|blocked by)\s*:\s*(.*)$`)
+	headerRe = regexp.MustCompile(`(?i)^(status|type|blocked by|touches)\s*:\s*(.*)$`)
 	titleRe  = regexp.MustCompile(`^#\s+(.+)$`)
 )
 
@@ -198,6 +200,8 @@ func parseIssue(path, feature string) Issue {
 				iss.Type = strings.ToLower(val)
 			case "blocked by":
 				iss.BlockedBy = parseNums(val)
+			case "touches":
+				iss.Touches = parsePaths(val)
 			}
 		}
 	}
@@ -222,6 +226,127 @@ func parseNums(s string) []string {
 		out = append(out, tok)
 	}
 	return out
+}
+
+// parsePaths splits a "Touches" value into repo-relative paths, comma-separated.
+// Each path is trimmed and cleaned (trailing slashes dropped so directory and
+// file forms compare consistently); empties and the "None" placeholder are
+// skipped. A line with no usable paths yields nil — treated as unknown scope.
+func parsePaths(s string) []string {
+	var out []string
+	for _, tok := range strings.Split(s, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || strings.EqualFold(tok, "none") {
+			continue
+		}
+		// Normalize: drop a leading "./" and any trailing slash so a directory
+		// like "internal/tui/" compares as the segment path "internal/tui".
+		tok = strings.TrimPrefix(tok, "./")
+		tok = strings.TrimRight(tok, "/")
+		if tok == "" {
+			continue
+		}
+		out = append(out, tok)
+	}
+	return out
+}
+
+// PathsOverlap reports whether two repo-relative paths refer to overlapping
+// scope: they overlap when they are equal, or when one is a path-segment prefix
+// of the other. Prefix is by whole segments — "internal/tui" overlaps
+// "internal/tui/issues.go" but "internal/t" does NOT overlap "internal/tui".
+func PathsOverlap(a, b string) bool {
+	a = strings.TrimRight(strings.TrimPrefix(a, "./"), "/")
+	b = strings.TrimRight(strings.TrimPrefix(b, "./"), "/")
+	if a == b {
+		return true
+	}
+	// Ensure a is the shorter (candidate prefix); if b is a prefix of a, the
+	// prefix must end on a segment boundary in a.
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a+"/")
+}
+
+// touchesOverlap reports whether any path in one issue's Touches overlaps any
+// path in the other. An issue with no Touches has unknown scope and therefore
+// conservatively overlaps everything (never parallel-safe).
+func touchesOverlap(a, b Issue) bool {
+	if len(a.Touches) == 0 || len(b.Touches) == 0 {
+		return true
+	}
+	for _, pa := range a.Touches {
+		for _, pb := range b.Touches {
+			if PathsOverlap(pa, pb) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// blockingEdge reports whether either issue lists the other as a Blocked-by
+// dependency (by issue number), so waves never pair a dependency with its
+// dependent even if their file scopes happen to be disjoint.
+func blockingEdge(a, b Issue) bool {
+	if a.Num != "" {
+		for _, n := range b.BlockedBy {
+			if n == a.Num {
+				return true
+			}
+		}
+	}
+	if b.Num != "" {
+		for _, n := range a.BlockedBy {
+			if n == b.Num {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ParallelSafe groups the currently-ready issues (Bucket == "todo") into waves
+// that are safe to run in parallel: within a wave every pair of issues has
+// pairwise-disjoint Touches AND no Blocked-by edge between them. It is advisory
+// and dynamic — computed from Touches + Blocked-by, not a stored per-issue flag,
+// since safety is pairwise and shifts as blockers resolve.
+//
+// The grouping is greedy over the list order (which Scan sorts by feature then
+// number): each ready issue joins the first existing wave it is compatible with,
+// else it starts a new wave. Issues with unknown scope (no Touches) conflict
+// with everything and land in singleton waves. Callers typically care only about
+// waves with more than one member.
+func ParallelSafe(list []Issue) [][]Issue {
+	var ready []Issue
+	for _, iss := range list {
+		if Bucket(iss) == "todo" {
+			ready = append(ready, iss)
+		}
+	}
+	var waves [][]Issue
+	for _, iss := range ready {
+		placed := false
+		for wi := range waves {
+			ok := true
+			for _, member := range waves[wi] {
+				if touchesOverlap(iss, member) || blockingEdge(iss, member) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				waves[wi] = append(waves[wi], iss)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			waves = append(waves, []Issue{iss})
+		}
+	}
+	return waves
 }
 
 // slugToTitle turns "add-login-form" into "Add login form".

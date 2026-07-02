@@ -101,17 +101,25 @@ Each file has a title and a few header lines near the top:
 Status: ready-for-agent
 Type: task
 Blocked by: None
+Touches: internal/tui/, main.go
 
 ## What to build
 …
 ```
 
-This is the layout the [mattpocock/skills](https://github.com/mattpocock/skills) planning skills produce — use `/to-issues` to break a plan into issues and `/triage` to move them to `ready-for-agent`. `capataz install` also installs a **`capataz-work`** skill: when you start an issue, the agent runs it to claim the issue (`Status: claimed`), implement the slice, and resolve it (`Status: resolved`). The markdown files are the source of truth; the dashboard re-reads them live, so claims and resolutions show up as agents make them.
+`capataz install` ships the skills that drive this workflow:
 
-You can also drive the backlog from the command line:
+- **`capataz-splitter`** — breaks a plan/PRD into tracer-bullet vertical slices and publishes them as issues. It explores the codebase to predict each issue's `Touches:` (the files/dirs it will modify) and draws the slices to minimize overlap. (This is capataz's replacement for mattpocock's `/to-issues`; the file format stays compatible with `/triage` and `/wayfinder`.)
+- **`capataz-work`** — when you start an issue, the agent claims it (`Status: claimed`), implements the slice, and resolves it (`Status: resolved`).
+- **`capataz-review`** — the fresh-context reviewer behind `R`.
+
+**Parallel-safe advisory.** From the `Touches:` lines, capataz derives which *ready* issues form a parallel-safe set — pairwise-disjoint files and no blocking edge between them — and shows it (`⇉ parallel-safe: 01, 02`) in the issues view. An issue with no `Touches:` is treated as touching everything (never parallel-safe), so the hint is conservative. It's **advisory today** (see the one-at-a-time warning above); it becomes actionable once worktree isolation lands.
+
+The markdown files are the source of truth; the dashboard re-reads them live, so claims and resolutions show up as agents make them. You can also drive the backlog from the command line:
 
 ```sh
 capataz issue list .                       # show this repo's backlog
+capataz issue new  <feature> "<title>" --body "…"   # file a new issue
 capataz issue claim   .scratch/f/issues/01-x.md
 capataz issue resolve .scratch/f/issues/01-x.md --answer "what shipped"
 ```
