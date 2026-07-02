@@ -394,6 +394,39 @@ func currentAttachedSession() string {
 	return ""
 }
 
+// paneBusyChecker returns a predicate reporting whether any live tmux pane has
+// its current working directory at or under a given worktree dir — i.e. a
+// dispatch is still sitting in that worktree. It's the liveness signal
+// worktree.Orphans uses to never prune a live dispatch (the never-prune-a-live
+// guarantee). It snapshots every pane's cwd once (one `tmux list-panes -a`) so
+// the returned func is a cheap map/prefix check per worktree.
+//
+// If tmux can't be queried the predicate returns true for everything — pruning
+// nothing — so an inability to prove a dispatch is gone never removes a worktree
+// that might be live.
+func paneBusyChecker() func(dir string) bool {
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_current_path}").Output()
+	if err != nil {
+		return func(string) bool { return true } // can't prove idle: prune nothing
+	}
+	var cwds []string
+	for _, ln := range strings.Split(string(out), "\n") {
+		if p := strings.TrimSpace(ln); p != "" {
+			cwds = append(cwds, p)
+		}
+	}
+	return func(dir string) bool {
+		dir = strings.TrimRight(dir, "/")
+		for _, cwd := range cwds {
+			cwd = strings.TrimRight(cwd, "/")
+			if cwd == dir || strings.HasPrefix(cwd, dir+"/") {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // livePaneSessions maps each existing pane id to its tmux session name, or nil
 // if tmux can't be queried. Used to label sessions in the dashboard.
 func livePaneSessions() map[string]string {

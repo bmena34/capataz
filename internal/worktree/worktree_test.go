@@ -232,6 +232,151 @@ func TestMergeConflict(t *testing.T) {
 	}
 }
 
+// neverBusy is a liveness probe that reports every worktree as idle, so Orphans
+// is judged purely on git signals (clean tree, no unmerged commits).
+func neverBusy(string) bool { return false }
+
+// TestOrphansPrunesAbandonedDispatch: a capataz/ worktree with no commits and no
+// live session is an orphan; pruning removes the worktree and its branch.
+func TestOrphansAbandonedIsPrunable(t *testing.T) {
+	repo := initRepo(t)
+	writeCommit(t, repo, "base.txt", "base\n", "add base")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	branch := "capataz/feature-01-slug"
+	if err := Add(repo, dest, branch); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// No commits on the branch, clean tree: an abandoned dispatch.
+	orphans, err := Orphans(repo, neverBusy)
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Branch != branch {
+		t.Fatalf("Orphans = %+v, want exactly the %q worktree", orphans, branch)
+	}
+
+	pruned, err := PruneOrphans(repo, neverBusy)
+	if err != nil {
+		t.Fatalf("PruneOrphans: %v", err)
+	}
+	if len(pruned) != 1 || pruned[0] != branch {
+		t.Fatalf("PruneOrphans pruned = %v, want [%q]", pruned, branch)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir still present after prune: stat err=%v", err)
+	}
+	if err := exec.Command("git", "-C", repo, "rev-parse", "--verify", branch).Run(); err == nil {
+		t.Fatalf("branch %q still exists after prune", branch)
+	}
+}
+
+// TestOrphansNeverPrunesLiveDispatch: the busy probe reporting a live pane in the
+// worktree must keep it out of the orphan set — the never-prune-a-live guarantee.
+func TestOrphansNeverPrunesLiveDispatch(t *testing.T) {
+	repo := initRepo(t)
+	writeCommit(t, repo, "base.txt", "base\n", "add base")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	branch := "capataz/feature-02-slug"
+	if err := Add(repo, dest, branch); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	destResolved := evalSymlinks(t, dest)
+	// A pane's cwd sits inside the worktree -> live.
+	busy := func(path string) bool { return evalSymlinks(t, path) == destResolved }
+
+	orphans, err := Orphans(repo, busy)
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("Orphans = %+v, want none (live dispatch must never be pruned)", orphans)
+	}
+	// A nil busy func is the most conservative: prune nothing.
+	if orphans, err := Orphans(repo, nil); err != nil || len(orphans) != 0 {
+		t.Fatalf("Orphans(nil busy) = %+v, err %v; want none", orphans, err)
+	}
+}
+
+// TestOrphansKeepsUnmergedWork: a capataz/ worktree with commits not yet merged
+// into base is NOT an orphan — it still needs a merge-back, so pruning would lose
+// work. Also asserts a dirty tree is kept.
+func TestOrphansKeepsUnmergedWork(t *testing.T) {
+	repo := initRepo(t)
+	writeCommit(t, repo, "base.txt", "base\n", "add base")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	branch := "capataz/feature-03-slug"
+	if err := Add(repo, dest, branch); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// A committed-but-unmerged change: ahead of base -> keep.
+	writeCommit(t, dest, "new.txt", "work\n", "unmerged work")
+
+	orphans, err := Orphans(repo, neverBusy)
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("Orphans = %+v, want none (unmerged commits must be kept)", orphans)
+	}
+
+	// After the branch is merged into base, the same worktree becomes a prunable
+	// orphan (its commits are now reachable from base).
+	if err := Merge(repo, branch); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	orphans, err = Orphans(repo, neverBusy)
+	if err != nil {
+		t.Fatalf("Orphans (post-merge): %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Branch != branch {
+		t.Fatalf("post-merge Orphans = %+v, want the merged %q worktree", orphans, branch)
+	}
+}
+
+// TestOrphansKeepsDirtyTree: a capataz/ worktree with uncommitted changes is not
+// prunable even with no commits ahead of base — there is unsaved work to lose.
+func TestOrphansKeepsDirtyTree(t *testing.T) {
+	repo := initRepo(t)
+	writeCommit(t, repo, "base.txt", "base\n", "add base")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	branch := "capataz/feature-04-slug"
+	if err := Add(repo, dest, branch); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Uncommitted file in the worktree -> dirty -> keep.
+	if err := os.WriteFile(filepath.Join(dest, "scratch.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orphans, err := Orphans(repo, neverBusy)
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("Orphans = %+v, want none (dirty tree must be kept)", orphans)
+	}
+}
+
+// TestOrphansIgnoresNonCapatazWorktrees: a plain (non-capataz/) worktree branch
+// is never considered, and the primary checkout is never listed.
+func TestOrphansIgnoresNonCapatazWorktrees(t *testing.T) {
+	repo := initRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	if err := Add(repo, dest, "feature-plain"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	orphans, err := Orphans(repo, neverBusy)
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("Orphans = %+v, want none (non-capataz branch must be ignored)", orphans)
+	}
+}
+
 func TestPrimaryCheckoutNotARepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")

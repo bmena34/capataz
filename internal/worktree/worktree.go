@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -159,4 +160,117 @@ func CurrentBranch(dir string) (string, error) {
 		return "", fmt.Errorf("git rev-parse: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// commitsAhead counts commits on branch that are not reachable from base
+// (`git rev-list --count <base>..<branch>`), i.e. the unmerged work on branch.
+// Zero means the branch carries nothing the base doesn't already have — every
+// commit has been merged, or the branch never committed at all. A git error
+// (unknown ref, base gone) is reported so callers can err toward "not safe".
+func commitsAhead(primaryDir, base, branch string) (int, error) {
+	out, err := exec.Command("git", "-C", primaryDir, "rev-list", "--count", base+".."+branch).Output()
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list %s..%s: %w", base, branch, err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list count parse: %w", err)
+	}
+	return n, nil
+}
+
+// dirty reports whether the worktree at path has any uncommitted changes
+// (staged, unstaged, or untracked), per `git status --porcelain`. A git error
+// is treated as dirty (conservative: never prune what we can't prove is clean).
+func dirty(path string) bool {
+	out, err := exec.Command("git", "-C", path, "status", "--porcelain").Output()
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// Orphans returns the capataz-dispatched worktrees under primaryDir's repo that
+// are SAFE to prune — the leftovers of a crashed or aborted parallel dispatch
+// that nothing else will clean up (a clean merge-back removes its own worktree
+// via RemoveMerged). It is deliberately conservative so a live or recoverable
+// dispatch is never reported:
+//
+// A linked worktree qualifies only when ALL hold:
+//   - its branch carries the capataz/ prefix (issues.BranchPrefix), so we only
+//     ever touch worktrees capataz itself created;
+//   - it is not the primary checkout (Orphans never lists primaryDir);
+//   - busy(path) is false — the caller's liveness probe (a tmux pane whose cwd
+//     is inside the worktree) says no live session is sitting in it. This is the
+//     never-prune-a-live-dispatch guarantee; a caller that can't check liveness
+//     must pass a busy func that returns true (prune nothing) rather than nil;
+//   - its working tree is clean (no uncommitted or untracked changes) — nothing
+//     unsaved to lose;
+//   - it has zero commits ahead of base (the primary's current branch) — every
+//     commit it made is already merged, or it never committed. Unmerged work is
+//     NEVER pruned; that branch still needs a merge-back, not deletion.
+//
+// base is resolved from primaryDir's current branch. Any git error resolving a
+// per-worktree signal (ahead count, dirtiness) errs toward keeping the worktree.
+func Orphans(primaryDir string, busy func(path string) bool) ([]WT, error) {
+	if busy == nil {
+		busy = func(string) bool { return true } // no liveness signal: prune nothing
+	}
+	base, err := CurrentBranch(primaryDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve base branch: %w", err)
+	}
+	wts, err := ListWT(primaryDir)
+	if err != nil {
+		return nil, err
+	}
+	primary, err := PrimaryCheckout(primaryDir)
+	if err != nil {
+		return nil, err
+	}
+	var orphans []WT
+	for _, wt := range wts {
+		if wt.Path == primary {
+			continue // never the primary checkout
+		}
+		if !strings.HasPrefix(wt.Branch, "capataz/") {
+			continue // only capataz-dispatched worktrees
+		}
+		if busy(wt.Path) {
+			continue // a live dispatch is sitting here — never prune it
+		}
+		if dirty(wt.Path) {
+			continue // uncommitted work to preserve
+		}
+		ahead, err := commitsAhead(primaryDir, base, wt.Branch)
+		if err != nil || ahead > 0 {
+			continue // unmerged commits (or unknown): needs a merge-back, not a prune
+		}
+		orphans = append(orphans, wt)
+	}
+	return orphans, nil
+}
+
+// PruneOrphans removes every worktree Orphans reports, tearing down each with
+// RemoveMerged (worktree removal + best-effort merged-branch delete). It returns
+// the branches it pruned and the first removal error, if any (removal continues
+// past a failure so one stuck worktree doesn't block the rest). See Orphans for
+// the safety rules — PruneOrphans never removes anything Orphans wouldn't list.
+func PruneOrphans(primaryDir string, busy func(path string) bool) ([]string, error) {
+	orphans, err := Orphans(primaryDir, busy)
+	if err != nil {
+		return nil, err
+	}
+	var pruned []string
+	var firstErr error
+	for _, wt := range orphans {
+		if err := RemoveMerged(primaryDir, wt.Path, wt.Branch); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		pruned = append(pruned, wt.Branch)
+	}
+	return pruned, firstErr
 }

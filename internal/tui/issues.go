@@ -14,7 +14,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/bmena34/capataz/internal/install"
 	"github.com/bmena34/capataz/internal/issues"
+	"github.com/bmena34/capataz/internal/logging"
 	"github.com/bmena34/capataz/internal/paths"
 	"github.com/bmena34/capataz/internal/worktree"
 )
@@ -110,6 +112,49 @@ func (m *model) loadIssues() {
 	}
 	m.clampIssueCursor()
 	m.refreshReadyMerges()
+	m.refreshOrphanWorktrees()
+}
+
+// refreshOrphanWorktrees recomputes the prunable orphan set for issueRepo:
+// capataz-dispatched worktrees left behind by a crashed/aborted parallel
+// dispatch (no live session, clean tree, no unmerged commits). It shells out to
+// git + tmux, so it runs only from loadIssues (selection change or the forced
+// tick refresh), never on the render path — the popup footer and the `x` prune
+// action read the cache. worktree.Orphans applies the never-prune-a-live-dispatch
+// guarantee via the pane-liveness checker.
+func (m *model) refreshOrphanWorktrees() {
+	m.orphanWorktrees = nil
+	if m.issueRepo == "" {
+		return
+	}
+	orphans, err := worktree.Orphans(m.issueRepo, paneBusyChecker())
+	if err != nil {
+		return // not a repo / no worktrees: nothing to prune, silently
+	}
+	m.orphanWorktrees = orphans
+}
+
+// pruneOrphans tears down the cached orphan worktrees (the `x` action in the
+// issues view). It re-derives the safe set live through worktree.PruneOrphans
+// (which re-checks pane liveness and unmerged commits at action time, so a
+// worktree that went live since the last refresh is still spared), removes each,
+// then reloads so the count and merge set reflect the pruning.
+func (m model) pruneOrphans() (tea.Model, tea.Cmd) {
+	if len(m.orphanWorktrees) == 0 {
+		m.status = "no orphaned worktrees to prune"
+		return m, nil
+	}
+	pruned, err := worktree.PruneOrphans(m.issueRepo, paneBusyChecker())
+	m.loadIssues() // refresh the cached orphan/merge sets after removal
+	switch {
+	case err != nil && len(pruned) == 0:
+		m.status = "prune failed: " + err.Error()
+	case err != nil:
+		m.status = fmt.Sprintf("pruned %d worktree(s), then failed: %v", len(pruned), err)
+	default:
+		m.status = fmt.Sprintf("pruned %d orphaned worktree(s)", len(pruned))
+	}
+	return m, nil
 }
 
 // mergeCandidate is one dispatched worktree branch ready to merge back: its
@@ -198,6 +243,8 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.dispatchParallel(true)
 	case "m": // merge back the ready dispatched worktree branches (Round 2)
 		return m.mergeReady()
+	case "x": // prune orphaned dispatch worktrees (crashed/aborted, nothing live)
+		return m.pruneOrphans()
 	case "enter", "o":
 		if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 			m.startIssue = m.issueList[m.issueCursor]
@@ -287,6 +334,12 @@ func (m model) dispatchParallel(force bool) (tea.Model, tea.Cmd) {
 		if err := worktree.Add(m.issueRepo, dir, branch); err != nil {
 			m.status = "worktree for " + num + " failed: " + err.Error()
 			continue // don't abort the batch — dispatch the rest
+		}
+		// Pre-trust the fresh worktree dir so the spawned claude doesn't stall on
+		// the folder-trust prompt before it can run the dispatch prompt. Best
+		// effort — on failure the session still spawns (it'd just show the prompt).
+		if err := install.TrustDir(dir); err != nil {
+			logging.Infof("pre-trust worktree %s: %v", dir, err)
 		}
 		name := iss.Feature + "-" + num
 		if _, err := newSessionWithSidebar(name, dir, worktreeDispatchPrompt(iss.Path, branch)); err != nil {
@@ -567,6 +620,10 @@ func (m model) issuesPopup(base string) string {
 	if n := len(m.readyMerges); n > 0 {
 		ready := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(fmt.Sprintf("%d ready to merge · m", n))
 		help = ready + footerStyle.Render(" · ") + help
+	}
+	if n := len(m.orphanWorktrees); n > 0 {
+		orphan := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(fmt.Sprintf("%d orphan worktree(s) · x prune", n))
+		help = orphan + footerStyle.Render(" · ") + help
 	}
 	title := "Issues · " + m.issueRepoName
 

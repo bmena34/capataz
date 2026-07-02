@@ -51,6 +51,11 @@ func PidDir() string { return filepath.Join(Dir(), "pids") }
 // ClaudeSettings is the user's global Claude Code settings file.
 func ClaudeSettings() string { return filepath.Join(home(), ".claude", "settings.json") }
 
+// ClaudeConfigJSON is Claude Code's main per-user state file (~/.claude.json),
+// which records, among much else, per-project folder-trust under
+// projects.<abs-dir>.hasTrustDialogAccepted.
+func ClaudeConfigJSON() string { return filepath.Join(home(), ".claude.json") }
+
 // ClaudeSkillsDir is where Claude Code loads user skills from. capataz installs
 // its native skills here.
 func ClaudeSkillsDir() string { return filepath.Join(home(), ".claude", "skills") }

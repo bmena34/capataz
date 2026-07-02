@@ -24,6 +24,7 @@ import (
 	"github.com/bmena34/capataz/internal/paths"
 	"github.com/bmena34/capataz/internal/proto"
 	"github.com/bmena34/capataz/internal/store"
+	"github.com/bmena34/capataz/internal/worktree"
 )
 
 type mode int
@@ -115,6 +116,13 @@ type model struct {
 	// the render path (syncSelectedIssues shells out to git worktree list), so the
 	// issues view and the `m` merge action read it without a git call per render.
 	readyMerges []mergeCandidate
+	// orphanWorktrees caches the capataz-dispatched worktrees under issueRepo that
+	// are safe to prune — leftovers of a crashed/aborted parallel dispatch with no
+	// live session, clean tree, and no unmerged commits (worktree.Orphans). Like
+	// readyMerges it's refreshed off the render path (shells out to git + tmux), so
+	// the issues view surfaces the count and the `x` prune action read it without a
+	// subprocess per render. A live dispatch is never listed here (see worktree.Orphans).
+	orphanWorktrees []worktree.WT
 	// issueMod is the newest .scratch mtime observed for issueRepo at the last
 	// loadIssues. The forced per-tick refresh compares a cheap re-probe against it
 	// (issues.ScratchModTime, no file reads) and skips the full scan when nothing
