@@ -56,6 +56,50 @@ func TestWorktreeDispatchPromptShape(t *testing.T) {
 	}
 }
 
+// TestDispatchableSet checks the parallel-dispatch guard: only Bucket "todo"
+// issues are dispatchable; resolved/blocked/claimed are skipped with a
+// bucket-labeled reason, so dispatchParallel never spawns an agent on terminal
+// or blocked work (the live-shakeout finding).
+func TestDispatchableSet(t *testing.T) {
+	sel := []issues.Issue{
+		{Num: "01", Status: issues.StatusReadyForAgent},
+		{Num: "02", Status: issues.StatusResolved},
+		{Num: "03", Status: issues.StatusReadyForAgent, Blocked: true},
+		{Num: "04", Status: issues.StatusClaimed},
+		{Num: "05", Status: ""}, // empty -> todo -> dispatchable
+	}
+	dispatchable, skipped := dispatchableSet(sel)
+
+	var gotNums []string
+	for _, iss := range dispatchable {
+		gotNums = append(gotNums, iss.Num)
+	}
+	if strings.Join(gotNums, ",") != "01,05" {
+		t.Errorf("dispatchable = %v, want [01 05]", gotNums)
+	}
+
+	wantSkipped := []string{"02 (done)", "03 (blocked)", "04 (doing)"}
+	if strings.Join(skipped, ",") != strings.Join(wantSkipped, ",") {
+		t.Errorf("skipped = %v, want %v", skipped, wantSkipped)
+	}
+}
+
+// TestDispatchableSetAllSkipped confirms an all-terminal/blocked selection
+// yields nothing to dispatch.
+func TestDispatchableSetAllSkipped(t *testing.T) {
+	sel := []issues.Issue{
+		{Num: "01", Status: issues.StatusResolved},
+		{Num: "02", Status: issues.StatusReadyForAgent, Blocked: true},
+	}
+	dispatchable, skipped := dispatchableSet(sel)
+	if len(dispatchable) != 0 {
+		t.Errorf("dispatchable = %v, want none", dispatchable)
+	}
+	if len(skipped) != 2 {
+		t.Errorf("skipped = %v, want 2 entries", skipped)
+	}
+}
+
 // TestIssueBadgePartsLabelsFromTable checks the badge label comes from the
 // shared issues vocabulary table (not an independent list) for known statuses,
 // and that an unknown status falls back to uppercasing while a known one always

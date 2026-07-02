@@ -567,6 +567,28 @@ func TestMutuallyParallelSafe(t *testing.T) {
 	}
 }
 
+func TestDispatchable(t *testing.T) {
+	cases := []struct {
+		name string
+		iss  Issue
+		want bool
+	}{
+		{"ready-for-agent", Issue{Status: StatusReadyForAgent}, true},
+		{"needs-triage still todo", Issue{Status: StatusNeedsTriage}, true},
+		{"unknown status falls through to todo", Issue{Status: "mid-review"}, true},
+		{"empty status", Issue{Status: ""}, true},
+		{"claimed (doing) not dispatchable", Issue{Status: StatusClaimed}, false},
+		{"resolved (done) not dispatchable", Issue{Status: StatusResolved}, false},
+		{"wontfix (done) not dispatchable", Issue{Status: StatusWontfix}, false},
+		{"blocked not dispatchable", Issue{Status: StatusReadyForAgent, Blocked: true}, false},
+	}
+	for _, c := range cases {
+		if got := Dispatchable(c.iss); got != c.want {
+			t.Errorf("%s: Dispatchable = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestNonNumberedFile(t *testing.T) {
 	repo := t.TempDir()
 	writeIssue(t, repo, "f", "notes.md", "# Some notes\n\nStatus: ready-for-agent\n")

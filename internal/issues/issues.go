@@ -532,6 +532,17 @@ func MutuallyParallelSafe(set []Issue) bool {
 	return true
 }
 
+// Dispatchable reports whether an issue is actually workable right now, and so
+// worth spawning a fresh worktree+session for. Only Bucket "todo" qualifies
+// (ready-for-agent / claimable / open) — a "done" (resolved/wontfix/closed),
+// "blocked", or "doing" (already claimed, someone is on it) issue is NOT
+// dispatchable: spawning an agent on it just reads the terminal/blocked file and
+// stops. This is dispatchability, distinct from MutuallyParallelSafe's pairwise
+// overlap check: forcing overrides parallel-safety, never dispatchability.
+func Dispatchable(iss Issue) bool {
+	return Bucket(iss) == BucketTodo
+}
+
 // BranchPrefix is the prefix capataz puts on every dispatched worktree branch:
 // dispatch cuts `capataz/<feature>-<NN>-<slug>`, so Round 2's merge-back scans
 // only branches carrying it.

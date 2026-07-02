@@ -300,20 +300,51 @@ func (m model) selectedIssues() []issues.Issue {
 	return out
 }
 
+// dispatchableSet partitions a selection into the issues actually workable now
+// (issues.Dispatchable — Bucket todo) and a short reason list for the rest,
+// e.g. "07 (done)". A resolved/blocked/claimed issue is skipped: spawning a
+// worktree agent on it just re-reads the terminal/blocked file and stops
+// immediately (the live-shakeout finding). The reason uses issues.Bucket so the
+// vocabulary matches the tracker.
+func dispatchableSet(sel []issues.Issue) (dispatchable []issues.Issue, skipped []string) {
+	for _, iss := range sel {
+		if issues.Dispatchable(iss) {
+			dispatchable = append(dispatchable, iss)
+			continue
+		}
+		num := iss.Num
+		if num == "" {
+			num = "--"
+		}
+		skipped = append(skipped, fmt.Sprintf("%s (%s)", num, issues.Bucket(iss)))
+	}
+	return dispatchable, skipped
+}
+
 // dispatchParallel spawns one isolated-worktree session per selected issue. It
-// leaves the single-issue Enter path untouched — this is batches only. Unless
-// force is set it first checks the set is mutually parallel-safe (disjoint
+// leaves the single-issue Enter path untouched — this is batches only. It first
+// drops any non-dispatchable issues (resolved/blocked/claimed — see
+// dispatchableSet); those are never spawned even under force, since forcing
+// overrides the parallel-safety overlap check, not dispatchability. Unless force
+// is set it then checks the remaining set is mutually parallel-safe (disjoint
 // Touches, no blocking edge, known scope); an unsafe set is refused with a hint
 // to press capital P to override. Per-issue worktree failures are reported but
 // don't abort the rest of the batch.
 func (m model) dispatchParallel(force bool) (tea.Model, tea.Cmd) {
-	sel := m.selectedIssues()
-	if len(sel) == 0 {
+	all := m.selectedIssues()
+	if len(all) == 0 {
 		m.status = "select issues with space, then p to run them in parallel"
 		return m, nil
 	}
 	if os.Getenv("TMUX") == "" {
 		m.status = "can't spawn: capataz isn't in tmux"
+		return m, nil
+	}
+	sel, skipped := dispatchableSet(all)
+	if len(sel) == 0 {
+		m.issueSelected = nil
+		m.mode = modeNormal
+		m.status = "nothing to dispatch: all selected are resolved/blocked/claimed (" + strings.Join(skipped, ", ") + ")"
 		return m, nil
 	}
 	if !force && !issues.MutuallyParallelSafe(sel) {
@@ -353,6 +384,9 @@ func (m model) dispatchParallel(force bool) (tea.Model, tea.Cmd) {
 	m.mode = modeNormal
 	if dispatched > 0 {
 		m.status = fmt.Sprintf("dispatched %d parallel session(s)", dispatched)
+		if len(skipped) > 0 {
+			m.status += fmt.Sprintf(", skipped %d not dispatchable (%s)", len(skipped), strings.Join(skipped, ", "))
+		}
 		if m.popup {
 			return m, tea.Quit
 		}
@@ -928,17 +962,23 @@ func parallelWarn(iss issues.Issue, sel []issues.Issue) string {
 	return ""
 }
 
-// parallelConfirmPopup shows the selected set before a parallel dispatch, marking
-// which issues aren't parallel-safe and why — so p is never a silent no-op.
+// parallelConfirmPopup shows the selected set before a parallel dispatch. It
+// marks two independent problems per issue: non-dispatchability (resolved/
+// blocked/claimed — these are skipped, never spawned, even on dispatch-anyway)
+// and, for the dispatchable remainder, why an issue isn't parallel-safe. So p is
+// never a silent no-op and the operator sees exactly what will (and won't) run.
 func (m model) parallelConfirmPopup(base string) string {
 	sel := m.selectedIssues()
-	safe := issues.MutuallyParallelSafe(sel)
+	dispatchable, skipped := dispatchableSet(sel)
+	safe := issues.MutuallyParallelSafe(dispatchable)
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	skipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
-	title := fmt.Sprintf("Dispatch %d issue(s) in parallel?", len(sel))
-	head := title
-	if !safe {
-		head = warnStyle.Render("⚠ ") + title
+	head := fmt.Sprintf("Dispatch %d of %d selected issue(s)?", len(dispatchable), len(sel))
+	if len(dispatchable) == 0 {
+		head = warnStyle.Render("⚠ ") + "None dispatchable — nothing to run"
+	} else if !safe || len(skipped) > 0 {
+		head = warnStyle.Render("⚠ ") + head
 	}
 	lines := []string{head, ""}
 	for _, iss := range sel {
@@ -947,14 +987,23 @@ func (m model) parallelConfirmPopup(base string) string {
 			num = "--"
 		}
 		line := "  " + dimStyle.Render(num) + " " + truncate(iss.Title, 32)
-		if w := parallelWarn(iss, sel); w != "" {
+		if !issues.Dispatchable(iss) {
+			// Non-dispatchable: it will be skipped, not spawned. Show its bucket.
+			line += "  " + skipStyle.Render("⊘ skip ("+issues.Bucket(iss)+")")
+		} else if w := parallelWarn(iss, dispatchable); w != "" {
 			line += "  " + warnStyle.Render("⚠ "+w)
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", dimStyle.Render("  Each runs in its own git worktree + session."))
+	lines = append(lines, "", dimStyle.Render("  Each dispatchable issue runs in its own git worktree + session."))
+	if len(skipped) > 0 && len(dispatchable) > 0 {
+		lines = append(lines, skipStyle.Render(fmt.Sprintf("  %d not dispatchable will be skipped.", len(skipped))))
+	}
 	foot := "  ↵ dispatch · Esc cancel"
-	if !safe {
+	switch {
+	case len(dispatchable) == 0:
+		foot = "  Esc cancel (nothing to dispatch)"
+	case !safe:
 		foot = "  ↵ dispatch anyway · Esc cancel"
 	}
 	lines = append(lines, "", footerStyle.Render(foot))
