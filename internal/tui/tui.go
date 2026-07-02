@@ -114,6 +114,11 @@ type model struct {
 	// the render path (syncSelectedIssues shells out to git worktree list), so the
 	// issues view and the `m` merge action read it without a git call per render.
 	readyMerges []mergeCandidate
+	// issueMod is the newest .scratch mtime observed for issueRepo at the last
+	// loadIssues. The forced per-tick refresh compares a cheap re-probe against it
+	// (issues.ScratchModTime, no file reads) and skips the full scan when nothing
+	// changed, so idle browsing doesn't re-parse the whole backlog 60×/minute.
+	issueMod time.Time
 }
 
 // Run starts the dashboard. It blocks until the user quits.

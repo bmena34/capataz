@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,10 +21,18 @@ import (
 
 // syncSelectedIssues keeps the cached backlog (issueList) pointed at the
 // selected session's repo. It reloads from disk when the selection moves to a
-// different cwd, or always when force is set — the periodic tick forces a
-// reload to pick up claim/resolve edits agents make on disk. Reads are cheap
-// (one .scratch tree) and happen here, off the render path, so the inline
-// sidebar panel and the modal both render from the cache without scanning.
+// different cwd, or when force is set — the periodic tick forces a refresh to
+// pick up claim/resolve edits agents make on disk. Reads are cheap (one
+// .scratch tree) and happen here, off the render path, so the inline sidebar
+// panel and the modal both render from the cache without scanning.
+//
+// A forced refresh on the same repo first runs a cheap change probe
+// (issues.ScratchModTime — stats the .scratch tree, no file reads or parsing)
+// and skips the full scan when the backlog is byte-for-byte unchanged since the
+// last load, so idle browsing with the view open doesn't re-parse every issue
+// file each tick. An agent's claim/resolve/new edit bumps a stat'd mtime, so it
+// still shows up on the next tick. A cwd change always reloads (the probe is
+// against the new repo, which has no prior baseline).
 //
 // The scan root (issueRepo) is the selected cwd resolved to its primary git
 // checkout, so a session running in a linked worktree still shows (and starts
@@ -33,6 +42,7 @@ func (m *model) syncSelectedIssues(force bool) {
 	sel, ok := m.current()
 	if !ok {
 		m.issueCwd, m.issueRepo, m.issueRepoName, m.issueList = "", "", "", nil
+		m.issueMod = time.Time{}
 		return
 	}
 	if sel.Cwd != m.issueCwd {
@@ -47,6 +57,14 @@ func (m *model) syncSelectedIssues(force bool) {
 		m.issueSelected = nil // the previous repo's issues are no longer in view
 	} else if !force {
 		return // same cwd and no forced refresh: keep the cache
+	} else if !m.issueMod.IsZero() {
+		// Same cwd, forced refresh: probe the .scratch mtime (cheap — stats only,
+		// no file reads) and skip the full scan when nothing changed since the last
+		// load. A zero baseline means no backlog was loaded yet (or the repo has
+		// none), so we don't short-circuit there — that scan is a single ReadDir.
+		if mod, err := issues.ScratchModTime(m.issueRepo); err == nil && mod.Equal(m.issueMod) {
+			return
+		}
 	}
 	m.loadIssues()
 }
@@ -64,6 +82,13 @@ func (m *model) loadIssues() {
 	var selPath string
 	if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 		selPath = m.issueList[m.issueCursor].Path
+	}
+	// Record the change-probe baseline BEFORE scanning: if a write lands between
+	// the probe and the read, the recorded mtime is the older (pre-write) one, so
+	// the next tick's probe sees a newer mtime and reloads. Stat-first errs toward
+	// an extra scan, never toward a missed edit.
+	if mod, err := issues.ScratchModTime(m.issueRepo); err == nil {
+		m.issueMod = mod
 	}
 	feats, err := issues.Scan(m.issueRepo)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // writeIssue creates repo/.scratch/<feature>/issues/<name> with body.
@@ -546,5 +547,96 @@ func TestDispatchBranchAndMatch(t *testing.T) {
 	// A capataz/ branch with no backing issue doesn't match.
 	if _, ok := MatchBranch("capataz/login-99-gone", list); ok {
 		t.Fatal("MatchBranch(unknown) matched, want no match")
+	}
+}
+
+func TestScratchModTimeMissingScratch(t *testing.T) {
+	got, err := ScratchModTime(t.TempDir())
+	if err != nil {
+		t.Fatalf("want nil error for missing .scratch, got %v", err)
+	}
+	if !got.IsZero() {
+		t.Fatalf("want zero time for missing .scratch, got %v", got)
+	}
+}
+
+func TestScratchModTimeEmptyRepoRoot(t *testing.T) {
+	if got, err := ScratchModTime(""); err != nil || !got.IsZero() {
+		t.Fatalf("ScratchModTime(\"\") = %v, %v; want zero, nil", got, err)
+	}
+}
+
+// A claim/resolve rewrites an existing issue file in place (SetStatus does
+// os.WriteFile), which bumps the file's mtime but not the parent dir's. The
+// probe must reflect that, or an agent's edit would never be noticed.
+func TestScratchModTimeSeesFileRewrite(t *testing.T) {
+	repo := t.TempDir()
+	p := writeIssue(t, repo, "f", "01-a.md", "# A\n\nStatus: ready-for-agent\n")
+
+	before, err := ScratchModTime(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate an in-place status rewrite with a strictly newer mtime, without
+	// depending on wall-clock/mtime resolution: set the file's mtime forward and
+	// leave the containing directories untouched.
+	newer := before.Add(2 * time.Second)
+	if err := os.Chtimes(p, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := ScratchModTime(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.After(before) {
+		t.Fatalf("probe did not see file rewrite: before=%v after=%v", before, after)
+	}
+	if !after.Equal(newer) {
+		t.Fatalf("probe = %v, want the rewritten file's mtime %v", after, newer)
+	}
+}
+
+// Adding a new issue file (capataz issue new) must move the probe forward so a
+// freshly-filed issue shows up on the next tick.
+func TestScratchModTimeSeesNewFile(t *testing.T) {
+	repo := t.TempDir()
+	writeIssue(t, repo, "f", "01-a.md", "# A\n\nStatus: ready-for-agent\n")
+	before, err := ScratchModTime(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := writeIssue(t, repo, "f", "02-b.md", "# B\n\nStatus: ready-for-agent\n")
+	newer := before.Add(2 * time.Second)
+	if err := os.Chtimes(p, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := ScratchModTime(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.After(before) {
+		t.Fatalf("probe did not see the new file: before=%v after=%v", before, after)
+	}
+}
+
+// A pure re-probe with no on-disk change must return an Equal time, so the
+// caller can short-circuit the full scan.
+func TestScratchModTimeStableWhenUnchanged(t *testing.T) {
+	repo := t.TempDir()
+	writeIssue(t, repo, "f", "01-a.md", "# A\n\nStatus: ready-for-agent\n")
+	a, err := ScratchModTime(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ScratchModTime(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Equal(b) {
+		t.Fatalf("probe not stable across calls: %v vs %v", a, b)
 	}
 }

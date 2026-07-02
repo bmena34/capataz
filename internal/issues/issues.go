@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -114,6 +115,71 @@ func Scan(repoRoot string) ([]Feature, error) {
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i].Slug < features[j].Slug })
 	return features, nil
+}
+
+// ScratchModTime returns the newest modification time across the .scratch tree
+// for a repo, without reading or parsing any issue file — a cheap change probe
+// callers can compare across ticks to decide whether a full Scan is warranted.
+// It stats the .scratch root, every feature directory, every issues/ directory,
+// and every issue .md file. The .md files matter because rewriting an existing
+// file's Status (SetStatus) bumps the file's mtime but not the parent dir's, so
+// a dir-only probe would miss claim/resolve edits.
+//
+// A missing .scratch/ directory yields (zero time, nil) — the absence of a
+// backlog is not an error, and a zero time compares distinctly against any real
+// mtime so it still triggers a scan if a backlog later appears. The returned
+// time carries no monotonic clock reading (it comes from the filesystem), so
+// callers compare it with Time.Equal.
+func ScratchModTime(repoRoot string) (time.Time, error) {
+	if repoRoot == "" {
+		return time.Time{}, nil
+	}
+	root := filepath.Join(repoRoot, scratchDir)
+	rootInfo, err := os.Stat(root)
+	if os.IsNotExist(err) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	newest := rootInfo.ModTime()
+	bump := func(t time.Time) {
+		if t.After(newest) {
+			newest = t
+		}
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		featDir := filepath.Join(root, e.Name())
+		if info, ierr := e.Info(); ierr == nil {
+			bump(info.ModTime())
+		}
+		issuesDir := filepath.Join(featDir, "issues")
+		issueEntries, ierr := os.ReadDir(issuesDir)
+		if ierr != nil {
+			continue // no issues/ dir for this feature: nothing more to stat
+		}
+		if info, serr := os.Stat(issuesDir); serr == nil {
+			bump(info.ModTime())
+		}
+		for _, ie := range issueEntries {
+			if ie.IsDir() || !strings.HasSuffix(ie.Name(), ".md") {
+				continue
+			}
+			if info, serr := ie.Info(); serr == nil {
+				bump(info.ModTime())
+			}
+		}
+	}
+	return newest, nil
 }
 
 // scanFeature reads the issues/ directory of a single feature.
