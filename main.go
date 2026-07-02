@@ -13,12 +13,14 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/bmena34/capataz/internal/config"
 	"github.com/bmena34/capataz/internal/daemon"
 	"github.com/bmena34/capataz/internal/hook"
 	"github.com/bmena34/capataz/internal/install"
+	"github.com/bmena34/capataz/internal/issues"
 	"github.com/bmena34/capataz/internal/logging"
 	"github.com/bmena34/capataz/internal/paths"
 	"github.com/bmena34/capataz/internal/tui"
@@ -48,10 +50,10 @@ func main() {
 		os.Exit(0)
 	case "install":
 		logging.SetComponent("install")
-		run(install.Install)
+		run(func() error { return install.Install(skillsSub()) })
 	case "uninstall":
 		logging.SetComponent("install")
-		run(install.Uninstall)
+		run(func() error { return install.Uninstall(skillsSub()) })
 	case "start":
 		logging.SetComponent("install")
 		run(install.Start)
@@ -99,6 +101,8 @@ func main() {
 			pane = args[1]
 		}
 		run(func() error { return tui.Attach(pane) })
+	case "issue":
+		run(func() error { return issues.Run(args[1:]) })
 	case "config":
 		run(showConfig)
 	case "quit":
@@ -117,6 +121,17 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+// skillsSub returns the embedded skills tree rooted at the skill directories
+// (so its top-level entries are the skill names). Returns nil if the embed is
+// somehow unreadable, which makes install/uninstall skip skills rather than fail.
+func skillsSub() fs.FS {
+	sub, err := fs.Sub(skillsFS, "skills")
+	if err != nil {
+		return nil
+	}
+	return sub
 }
 
 // showConfig ensures a default config exists and prints its path + contents.
@@ -167,6 +182,7 @@ usage:
   capataz keybind attach [k]   bind prefix+k (default a) to attach a sidebar
   capataz keybind nav          bind Ctrl+h/j/k/l pane nav (nvim-aware)
   capataz statusline  show a "needs you" badge in tmux (off to remove)
+  capataz issue …     claim/resolve/list local .scratch issues (used by skills)
   capataz config      print the config file path + contents (~/.config/capataz)
   capataz install     wire up Claude Code hooks + start the daemon
   capataz uninstall   remove hooks + stop the daemon

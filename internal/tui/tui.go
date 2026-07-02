@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/bmena34/capataz/internal/issues"
 	"github.com/bmena34/capataz/internal/logging"
 	"github.com/bmena34/capataz/internal/paths"
 	"github.com/bmena34/capataz/internal/proto"
@@ -37,6 +38,8 @@ const (
 	modeHelp
 	modeKill
 	modeRename
+	modeIssues
+	modeStartWork
 )
 
 type tickMsg time.Time
@@ -83,6 +86,18 @@ type model struct {
 	// attachedSession is the tmux session name the user's client is currently
 	// viewing, so the dashboard can mark which Claude session they're attached to.
 	attachedSession string
+
+	// Issue view (modeIssues): the backlog of the selected session's repo,
+	// flattened across features in feature+number order, and a cursor into it.
+	// issueRepo/issueRepoName are the cwd scanned and its display name.
+	issueList     []issues.Issue
+	issueCursor   int
+	issueRepo     string
+	issueRepoName string
+	// startIssue/startPane back the start-work chooser (modeStartWork): the issue
+	// picked and the selected session's pane (empty when it has none / is dead).
+	startIssue issues.Issue
+	startPane  string
 }
 
 // Run starts the dashboard. It blocks until the user quits.
@@ -212,6 +227,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeConvo {
 			m.refreshConvo(true)
 		}
+		// Refresh the selected repo's backlog so both the inline panel and the
+		// modal pick up claim/resolve edits agents make on disk.
+		m.syncSelectedIssues(true)
 		return m, tick()
 
 	case killFallbackMsg:
@@ -250,10 +268,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pushMsg:
 		m.applyPush(msg.push)
+		m.syncSelectedIssues(false) // selection may have changed repos
 		return m, waitForMsg(m.msgCh)
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		next, cmd := m.handleKey(msg)
+		// Keep the cached backlog pointed at the selected session after any key
+		// that moved the cursor to a different repo.
+		if nm, ok := next.(model); ok {
+			nm.syncSelectedIssues(false)
+			return nm, cmd
+		}
+		return next, cmd
 	}
 	return m, nil
 }
@@ -388,6 +414,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeRename {
 		return m.handleRenameKey(msg)
 	}
+	if m.mode == modeIssues {
+		return m.handleIssuesKey(msg)
+	}
+	if m.mode == modeStartWork {
+		return m.handleStartWorkKey(msg)
+	}
 	if m.mode == modeLog {
 		key := msg.String()
 		if m.gPending {
@@ -428,6 +460,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit // cleanup() runs after the program loop exits
+	case "esc":
+		if m.popup {
+			return m, tea.Quit // esc dismisses the transient popup like a menu
+		}
 	case "?":
 		m.mode = modeHelp
 	case "up", "k":
@@ -487,6 +523,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.vp.SetContent(m.historyView(s.ID))
 			m.vp.GotoTop()
 		}
+	case "i": // open the interactive issue view for this repo's .scratch backlog
+		if _, ok := m.current(); ok {
+			m.openIssues()
+			return m, nil
+		}
+		m.status = "no session selected"
 	case "x": // gracefully quit a session (asks to confirm first)
 		if s, ok := m.current(); ok && s.TmuxPane != "" {
 			m.killID = s.ID
@@ -661,7 +703,7 @@ func (m model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "can't spawn: capataz isn't in tmux"
 			return m, nil
 		}
-		pane, err := newSessionWithSidebar(name, m.newDir)
+		pane, err := newSessionWithSidebar(name, m.newDir, "")
 		if err != nil {
 			m.status = "new session failed: " + err.Error()
 			return m, nil
@@ -924,6 +966,10 @@ func (m model) View() string {
 		return m.killPopup(base)
 	case modeRename:
 		return m.renamePopup(base)
+	case modeIssues:
+		return m.issuesPopup(base)
+	case modeStartWork:
+		return m.startWorkPopup(base)
 	}
 	return base
 }
@@ -997,12 +1043,14 @@ func (m model) dashboardView() string {
 		activeH = 3
 	}
 
-	// Detail panel gets the leftover space; if there isn't enough, the lists take
-	// it all (so sessions are never hidden to make room for Detail).
-	detailH := bodyH - needsH - activeH
-	showDetail := detailH >= 6
-	if !showDetail {
-		detailH = 0
+	// The Needs You + Active lists always get their full height (sessions are
+	// never hidden). The leftover splits between Detail (sized to its content)
+	// and an Issues panel that fills whatever remains — so the backlog lives in
+	// the sidebar's spare space instead of behind a keypress.
+	leftover := bodyH - needsH - activeH
+	showExtra := leftover >= 6
+	if !showExtra {
+		leftover = 0
 		activeH = bodyH - needsH
 		if activeH < 3 {
 			activeH = 3
@@ -1013,12 +1061,37 @@ func (m model) dashboardView() string {
 		panel(fmt.Sprintf("Needs You (%d)", len(needs)), m.listBody(needs, w-2, true), w, needsH, m.cursorIn(needs)),
 		panel(fmt.Sprintf("Active (%d)", len(active)), m.listBody(active, w-2, false), w, activeH, m.cursorIn(active)),
 	}
-	if showDetail {
+	if showExtra {
+		detailBody := m.detailBody(w-2, 0)
+		// The inline Issues tracker is a sidebar-only glance; the popup is the
+		// switch-and-work surface (press i there), so it keeps Detail full-height.
+		showIssues := !m.popup
+		detailH := leftover
+		if showIssues {
+			detailH = strings.Count(detailBody, "\n") + 3 // content lines + borders
+			// Cap Detail so at least a few issue rows fit below it.
+			if reserve := leftover - 5; detailH > reserve && reserve >= 5 {
+				detailH = reserve
+			}
+			if detailH > leftover {
+				detailH = leftover
+			}
+		}
 		title := "Detail"
 		if s, ok := m.current(); ok {
 			title = "Detail · " + m.label(s)
 		}
-		panels = append(panels, panel(title, m.detailBody(w-2, detailH-2), w, detailH, false))
+		panels = append(panels, panel(title, detailBody, w, detailH, false))
+
+		if showIssues {
+			if issuesH := leftover - detailH; issuesH >= 3 {
+				it := "Issues"
+				if m.issueRepoName != "" {
+					it = "Issues · " + m.issueRepoName
+				}
+				panels = append(panels, panel(it, m.issuePanelBody(issuesH-2), w, issuesH, false))
+			}
+		}
 	}
 	stack := lipgloss.JoinVertical(lipgloss.Left, panels...)
 	return stack + "\n" + strings.Join(kb, "\n")
@@ -1166,7 +1239,7 @@ func (m model) keybarLines() []string {
 		width = 12
 	}
 
-	hint := keybarStyle.Render("↵ switch · n new · x kill · ? keys")
+	hint := keybarStyle.Render("↵ switch · n new · i issues · x kill · ? keys")
 	hintW := ansi.StringWidth(hint)
 	dotW := ansi.StringWidth(dot)
 	// Left: one leading space + hint. Right: dot + one trailing space.
@@ -1311,11 +1384,13 @@ func (m model) helpPopup(base string) string {
 		"  r                   quick reply without leaving the dashboard",
 		"  c                   conversation — threaded history",
 		"  l                   event log",
+		"  i                   issues — browse this repo's .scratch backlog",
+		"                      (in issues: ↵ start work · R fresh review)",
 		"  x                   quit a session (graceful, with confirm)",
 		"",
 		hdr("Other"),
 		"  ?                   toggle this help",
-		"  q                   close the dashboard (re-summon with your key)",
+		"  q / Esc             close (Esc dismisses the popup)",
 	}
 	body := strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("  ? or Esc to close")
 

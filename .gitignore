@@ -7,4 +7,7 @@
 # settings backups capataz writes during install
 *.bak
 
+# local per-repo issue backlog (the .scratch markdown tracker)
+/.scratch/
+
 .DS_Store

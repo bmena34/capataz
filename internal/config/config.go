@@ -13,6 +13,15 @@ import (
 type Config struct {
 	Usage   Usage   `json:"usage"`
 	Sidebar Sidebar `json:"sidebar"`
+	Review  Review  `json:"review"`
+}
+
+// Review controls the optional review steps in the issue workflow.
+type Review struct {
+	// SanityCheck, when true, asks the capataz-work skill to run a quick
+	// sanity-check subagent over its diff before resolving an issue — a guard
+	// against an agent fooling itself, not a full review (that's the R key).
+	SanityCheck bool `json:"sanity_check"`
 }
 
 // Usage controls the live plan-usage gauge. NOTE: it reads the Claude Code OAuth

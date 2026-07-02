@@ -7,6 +7,7 @@ build:
 	go build -o $(BINARY) .
 
 install: build
+	sudo install -d $(PREFIX)/bin
 	sudo install -m 755 $(BINARY) $(PREFIX)/bin/$(BINARY)
 
 uninstall:

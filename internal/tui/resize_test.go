@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	"github.com/bmena34/capataz/internal/issues"
 	"github.com/bmena34/capataz/internal/proto"
 )
 
@@ -13,6 +14,13 @@ func TestRenderNoPanic(t *testing.T) {
 		{ID: "b", TmuxPane: "%2", State: proto.StateWorking, Cwd: "/Users/x/other"},
 	}
 	m.limits = proto.Usage{OK: true, SessionPct: 61, WeeklyPct: 8}
+	// A cached backlog so the inline sidebar Issues panel is exercised too.
+	m.issueRepoName = "proj"
+	m.issueList = []issues.Issue{
+		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent"},
+		{Feature: "login", Num: "02", Title: "Blocked slice", Status: "ready-for-agent", Blocked: true},
+		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved"},
+	}
 	for w := 1; w <= 80; w++ {
 		for h := 1; h <= 50; h++ {
 			func(w, h int) {
@@ -24,6 +32,47 @@ func TestRenderNoPanic(t *testing.T) {
 				m.width, m.height = w, h
 				_ = m.View()
 			}(w, h)
+		}
+	}
+}
+
+// TestRenderNoPanicIssueViews covers the issue browser and start-work chooser at
+// every size — a panic there closes the sidebar's pane, same as any other view.
+func TestRenderNoPanicIssueViews(t *testing.T) {
+	m := model{issueRepoName: "proj"}
+	m.issueList = []issues.Issue{
+		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent"},
+		{Feature: "login", Num: "02", Title: "Wire up session cookies", Status: "claimed"},
+		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved"},
+		{Feature: "billing", Num: "02", Title: "Blocked slice", Status: "ready-for-agent", Blocked: true},
+	}
+	m.startIssue = m.issueList[0]
+	// cursor 2 = the resolved "billing" issue, exercising the all-resolved footer.
+	for _, cursor := range []int{0, 2} {
+		for _, empty := range []bool{false, true} {
+			list := m.issueList
+			if empty {
+				list = nil
+			}
+			for _, md := range []mode{modeIssues, modeStartWork} {
+				for w := 1; w <= 80; w++ {
+					for h := 1; h <= 50; h++ {
+						func(w, h int, md mode) {
+							defer func() {
+								if r := recover(); r != nil {
+									t.Fatalf("panic mode=%d empty=%v cursor=%d w=%d h=%d: %v", md, empty, cursor, w, h, r)
+								}
+							}()
+							m.issueList = list
+							m.issueCursor = cursor
+							m.mode = md
+							m.width, m.height = w, h
+							m.clampIssueCursor()
+							_ = m.View()
+						}(w, h, md)
+					}
+				}
+			}
 		}
 	}
 }

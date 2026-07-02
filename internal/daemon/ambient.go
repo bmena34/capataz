@@ -33,7 +33,10 @@ func (h *hub) needsSummaryLocked() (count int, color string) {
 func (h *hub) updateBadge(count int, color string) {
 	val := ""
 	if count > 0 {
-		val = fmt.Sprintf("#[fg=%s,bold]⚑ %d#[default]", color, count)
+		// Pad both sides so the badge doesn't jam against neighbouring
+		// status-line segments (e.g. a themed session block). The spaces sit
+		// outside the styled region so they don't carry the badge's color.
+		val = fmt.Sprintf(" #[fg=%s,bold]⚑ %d#[default]  ", color, count)
 	}
 	if err := exec.Command("tmux", "set-option", "-g", "@capataz_needs", val).Run(); err != nil {
 		return // tmux not running

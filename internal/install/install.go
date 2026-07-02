@@ -6,6 +6,7 @@ package install
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -43,8 +44,10 @@ func specs() []hookSpec {
 // remove only ours and re-installs don't duplicate.
 const marker = "capataz hook"
 
-// Install wires up hooks and the launchd agent.
-func Install() error {
+// Install wires up hooks, the native skills, and the launchd agent. skills is
+// the embedded skills tree (rooted at the skill directories); a nil FS skips
+// skill installation.
+func Install(skills fs.FS) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
@@ -66,17 +69,42 @@ func Install() error {
 		return fmt.Errorf("install launchd agent: %w", err)
 	}
 	fmt.Printf("✓ daemon installed and started via launchd (%s)\n", paths.LaunchdLabel())
+
+	// Skills are a convenience layer, not core wiring — install them last and
+	// never let a copy failure abort the install: by here hooks + config + the
+	// daemon are already up, and aborting would leave settings.json pointing at a
+	// socket with no listener. Warn and continue instead.
+	if skills != nil {
+		installed, err := installSkills(skills)
+		if err != nil {
+			fmt.Printf("! some skills could not be installed (continuing): %v\n", err)
+		}
+		if len(installed) > 0 {
+			fmt.Printf("✓ skills installed to %s (%s)\n", paths.ClaudeSkillsDir(), strings.Join(installed, ", "))
+		}
+	}
+
 	fmt.Println("\nDone. New Claude Code sessions in tmux will appear in `capataz`.")
 	fmt.Println("Note: hooks load at session start, so restart any sessions already running.")
 	return nil
 }
 
-// Uninstall removes capataz hooks and the launchd agent.
-func Uninstall() error {
+// Uninstall removes capataz hooks, native skills, and the launchd agent. skills
+// is the embedded skills tree, used to know which skill directories are ours to
+// remove; a nil FS skips skill removal.
+func Uninstall(skills fs.FS) error {
 	if err := unwireSettings(); err != nil {
 		return fmt.Errorf("unwire settings.json: %w", err)
 	}
 	fmt.Printf("✓ capataz hooks removed from %s\n", paths.ClaudeSettings())
+
+	if skills != nil {
+		if removed, err := uninstallSkills(skills); err != nil {
+			fmt.Printf("! could not remove skills: %v\n", err)
+		} else if len(removed) > 0 {
+			fmt.Printf("✓ skills removed from %s (%s)\n", paths.ClaudeSkillsDir(), strings.Join(removed, ", "))
+		}
+	}
 
 	if err := uninstallLaunchd(); err != nil {
 		return fmt.Errorf("remove launchd agent: %w", err)
@@ -84,6 +112,114 @@ func Uninstall() error {
 	fmt.Println("✓ launchd agent removed and stopped")
 	fmt.Printf("\nData kept at %s (delete it manually if you want a clean slate).\n", paths.Dir())
 	return nil
+}
+
+// installSkills copies each top-level skill directory in the embedded tree into
+// ~/.claude/skills/<name>, overwriting our own prior copies. It returns the
+// names successfully installed and the first error encountered (if any) — a
+// failure on one skill does not stop the others. Only capataz's own skill
+// directories are touched; any other user skills are left alone.
+func installSkills(skills fs.FS) ([]string, error) {
+	names, err := skillNames(skills)
+	if err != nil {
+		return nil, err
+	}
+	dest := paths.ClaudeSkillsDir()
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return nil, err
+	}
+	var installed []string
+	var firstErr error
+	for _, name := range names {
+		if err := installSkill(skills, name, dest); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		installed = append(installed, name)
+	}
+	return installed, firstErr
+}
+
+// installSkill copies one skill into a temp directory and then atomically swaps
+// it into place. The destructive step (removing the old copy) happens only
+// after the copy has fully succeeded, so a failed or partial copy leaves any
+// previously-installed version of the skill intact.
+func installSkill(skills fs.FS, name, dest string) error {
+	target := filepath.Join(dest, name)
+	tmp := target + ".capataz-tmp"
+	_ = os.RemoveAll(tmp) // clear any leftover from a prior interrupted install
+	if err := copyTree(skills, name, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	if err := os.RemoveAll(target); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	return nil
+}
+
+// uninstallSkills removes the skill directories capataz installed. It returns
+// the names actually present and removed.
+func uninstallSkills(skills fs.FS) ([]string, error) {
+	names, err := skillNames(skills)
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, name := range names {
+		target := filepath.Join(paths.ClaudeSkillsDir(), name)
+		if _, err := os.Stat(target); err == nil {
+			if err := os.RemoveAll(target); err != nil {
+				return removed, err
+			}
+			removed = append(removed, name)
+		}
+	}
+	return removed, nil
+}
+
+// skillNames lists the top-level skill directory names in the embedded tree.
+func skillNames(skills fs.FS) ([]string, error) {
+	entries, err := fs.ReadDir(skills, ".")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
+// copyTree copies the sub-tree rooted at src within srcFS to the on-disk dstDir.
+func copyTree(srcFS fs.FS, src, dstDir string) error {
+	return fs.WalkDir(srcFS, src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(dstDir, rel)
+		if d.IsDir() {
+			return os.MkdirAll(out, 0o755)
+		}
+		data, err := fs.ReadFile(srcFS, p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(out, data, 0o644)
+	})
 }
 
 func wireSettings(bin string) error {

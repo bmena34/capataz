@@ -189,8 +189,10 @@ func paneOrigin(pane string) (session, windowID string, err error) {
 // newClaudeSession creates a new detached tmux session running claude in dir
 // and returns the new pane's id. name is the session name (sanitized and
 // deduplicated; falls back to the dir basename when blank), so each agent gets
-// its own named session whose layout travels with it.
-func newClaudeSession(name, dir string) (string, error) {
+// its own named session whose layout travels with it. When prompt is non-empty
+// it's passed to claude as its opening prompt (`claude "<prompt>"`), so the
+// agent boots straight into the work — no send-keys timing to fight.
+func newClaudeSession(name, dir, prompt string) (string, error) {
 	name = sanitizeName(name)
 	if name == "" {
 		name = sessionBase(dir)
@@ -207,12 +209,15 @@ func newClaudeSession(name, dir string) (string, error) {
 		args = append(args, "-c", dir)
 	}
 	args = append(args, "claude")
+	if prompt != "" {
+		args = append(args, prompt) // claude's positional opening prompt
+	}
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("new-session: %v", err)
 	}
 	pane := strings.TrimSpace(string(out))
-	logging.Infof("new session %q pane=%s dir=%s", name, pane, dir)
+	logging.Infof("new session %q pane=%s dir=%s prompt=%v", name, pane, dir, prompt != "")
 	return pane, nil
 }
 
@@ -239,8 +244,9 @@ func attachSidebar(targetPane string) error {
 
 // newSessionWithSidebar creates a new claude session and attaches a dashboard
 // sidebar to it. A sidebar failure is non-fatal — the session is still usable.
-func newSessionWithSidebar(name, dir string) (string, error) {
-	pane, err := newClaudeSession(name, dir)
+// prompt, when non-empty, is claude's opening prompt (see newClaudeSession).
+func newSessionWithSidebar(name, dir, prompt string) (string, error) {
+	pane, err := newClaudeSession(name, dir, prompt)
 	if err != nil {
 		return "", err
 	}

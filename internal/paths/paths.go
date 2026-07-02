@@ -47,6 +47,10 @@ func PidDir() string { return filepath.Join(Dir(), "pids") }
 // ClaudeSettings is the user's global Claude Code settings file.
 func ClaudeSettings() string { return filepath.Join(home(), ".claude", "settings.json") }
 
+// ClaudeSkillsDir is where Claude Code loads user skills from. capataz installs
+// its native skills here.
+func ClaudeSkillsDir() string { return filepath.Join(home(), ".claude", "skills") }
+
 // Plist is the launchd agent plist path.
 func Plist() string {
 	return filepath.Join(home(), "Library", "LaunchAgents", launchdLabel+".plist")
