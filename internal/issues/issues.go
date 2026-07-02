@@ -349,6 +349,61 @@ func ParallelSafe(list []Issue) [][]Issue {
 	return waves
 }
 
+// MutuallyParallelSafe reports whether a hand-picked set of issues is safe to
+// dispatch in parallel: every pair must have disjoint Touches AND no Blocked-by
+// edge between them, and no issue may have unknown scope (empty Touches, which
+// conservatively conflicts with everything). Unlike ParallelSafe it does not
+// filter by bucket — the set is exactly what the operator selected — it only
+// judges pairwise safety. A set of fewer than two issues is trivially safe.
+func MutuallyParallelSafe(set []Issue) bool {
+	for i := range set {
+		if len(set[i].Touches) == 0 {
+			return false // unknown scope: never safe
+		}
+		for j := i + 1; j < len(set); j++ {
+			if touchesOverlap(set[i], set[j]) || blockingEdge(set[i], set[j]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// BranchPrefix is the prefix capataz puts on every dispatched worktree branch:
+// dispatch cuts `capataz/<feature>-<NN>-<slug>`, so Round 2's merge-back scans
+// only branches carrying it.
+const BranchPrefix = "capataz/"
+
+// MatchBranch finds the issue in list that a dispatched worktree branch belongs
+// to. A dispatch branch is `capataz/<feature>-<NN>-<slug>`; the reliable join
+// key is Feature + Num, so MatchBranch pairs each issue with its expected branch
+// (via the same construction dispatch uses) and returns the first match. It
+// returns (issue, true) on a hit, (zero, false) otherwise — including for any
+// branch without the capataz/ prefix.
+func MatchBranch(branch string, list []Issue) (Issue, bool) {
+	if !strings.HasPrefix(branch, BranchPrefix) {
+		return Issue{}, false
+	}
+	for _, iss := range list {
+		if DispatchBranch(iss) == branch {
+			return iss, true
+		}
+	}
+	return Issue{}, false
+}
+
+// DispatchBranch returns the worktree branch name for an issue —
+// `capataz/<feature>-<NN>-<slug>`, using "--" for an unnumbered issue. It is the
+// single source of truth for the dispatch branch shape so dispatch (Round 1) and
+// merge-back matching (Round 2) can't drift apart.
+func DispatchBranch(iss Issue) string {
+	num := iss.Num
+	if num == "" {
+		num = "--"
+	}
+	return BranchPrefix + iss.Feature + "-" + num + "-" + iss.Slug
+}
+
 // slugToTitle turns "add-login-form" into "Add login form".
 func slugToTitle(slug string) string {
 	if slug == "" {

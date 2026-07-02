@@ -100,10 +100,19 @@ type model struct {
 	issueCwd      string
 	issueRepo     string
 	issueRepoName string
+	// issueSelected is the multi-select set for parallel dispatch, keyed by issue
+	// Path (stable across reloads). Cleared after a dispatch and when the selection
+	// moves to a different repo (its issues are no longer in view).
+	issueSelected map[string]bool
 	// startIssue/startPane back the start-work chooser (modeStartWork): the issue
 	// picked and the selected session's pane (empty when it has none / is dead).
 	startIssue issues.Issue
 	startPane  string
+	// readyMerges caches the dispatched worktree branches whose issue is resolved
+	// and so are ready to merge back (Round 2). Like issueList it's refreshed off
+	// the render path (syncSelectedIssues shells out to git worktree list), so the
+	// issues view and the `m` merge action read it without a git call per render.
+	readyMerges []mergeCandidate
 }
 
 // Run starts the dashboard. It blocks until the user quits.
@@ -1391,7 +1400,7 @@ func (m model) helpPopup(base string) string {
 		"  c                   conversation — threaded history",
 		"  l                   event log",
 		"  i                   issues — browse this repo's .scratch backlog",
-		"                      (in issues: ↵ start work · R fresh review)",
+		"                      (in issues: ↵ work · space select · p parallel · R review)",
 		"  x                   quit a session (graceful, with confirm)",
 		"",
 		hdr("Other"),

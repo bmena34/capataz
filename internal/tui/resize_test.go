@@ -44,13 +44,24 @@ func TestRenderNoPanic(t *testing.T) {
 func TestRenderNoPanicIssueViews(t *testing.T) {
 	m := model{issueRepoName: "proj"}
 	m.issueList = []issues.Issue{
-		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent", Touches: []string{"internal/tui/a.go"}},
-		{Feature: "login", Num: "02", Title: "Wire up session cookies", Status: "claimed"},
-		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved"},
-		{Feature: "billing", Num: "02", Title: "Blocked slice", Status: "ready-for-agent", Blocked: true},
-		{Feature: "billing", Num: "03", Title: "Store schema", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}},
+		{Feature: "login", Num: "01", Title: "Add the login form", Status: "ready-for-agent", Touches: []string{"internal/tui/a.go"}, Path: "/r/login/01.md"},
+		{Feature: "login", Num: "02", Title: "Wire up session cookies", Status: "claimed", Path: "/r/login/02.md"},
+		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved", Path: "/r/billing/01.md"},
+		{Feature: "billing", Num: "02", Title: "Blocked slice", Status: "ready-for-agent", Blocked: true, Path: "/r/billing/02.md"},
+		{Feature: "billing", Num: "03", Title: "Store schema", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}, Path: "/r/billing/03.md"},
 	}
 	m.startIssue = m.issueList[0]
+	// A multi-select set so the checkbox marker + parallel-dispatch UI render
+	// across all sizes (a panic there closes the sidebar's pane).
+	m.issueSelected = map[string]bool{
+		m.issueList[0].Path: true,
+		m.issueList[4].Path: true,
+	}
+	// Ready-to-merge candidates so the "N ready to merge · m" footer indicator
+	// renders across all sizes (Round 2 merge-back).
+	m.readyMerges = []mergeCandidate{
+		{Path: "/wt/billing-01", Branch: "capataz/billing-01-stripe", Issue: m.issueList[2]},
+	}
 	// cursor 2 = the resolved "billing" issue, exercising the all-resolved footer.
 	for _, cursor := range []int{0, 2} {
 		for _, empty := range []bool{false, true} {

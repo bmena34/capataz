@@ -19,6 +19,7 @@ import (
 //	capataz issue claim   <path>              set Status: claimed
 //	capataz issue resolve <path> [--answer …] set Status: resolved (+ optional answer)
 //	capataz issue status  <path> <status>     set Status: <status>
+//	capataz issue comment <path> <text>       append a note under ## Comments
 //	capataz issue list    <repo>              print the backlog for a repo
 //	capataz issue new     <feature> <title> [--body … --type … --repo …]
 func Run(args []string) error {
@@ -55,6 +56,11 @@ func Run(args []string) error {
 			return usageErr()
 		}
 		return setStatusCLI(args[1], args[2])
+	case "comment":
+		if len(args) < 3 {
+			return usageErr()
+		}
+		return commentCLI(args[1], strings.Join(args[2:], " "))
 	case "list":
 		repo := "."
 		if len(args) > 1 {
@@ -202,6 +208,31 @@ func slugify(title string) string {
 	return slug
 }
 
+// commentCLI appends a note under the issue file's "## Comments" section
+// (creating it if absent). Used by the review and fix-conflict skills to record
+// findings back onto an issue.
+func commentCLI(path, text string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("issue file not found: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	s := strings.TrimRight(string(data), "\n")
+	// Append under an existing Comments section (assumed last), else start one.
+	if strings.HasPrefix(s, "## Comments") || strings.Contains(s, "\n## Comments") {
+		s += "\n\n" + strings.TrimSpace(text) + "\n"
+	} else {
+		s += "\n\n## Comments\n\n" + strings.TrimSpace(text) + "\n"
+	}
+	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("%s → comment added\n", path)
+	return nil
+}
+
 // appendSection appends "## <heading>\n\n<body>" to a file, adding a leading
 // blank line so it doesn't run into whatever came before.
 func appendSection(path, heading, body string) error {
@@ -260,5 +291,5 @@ func flagValue(args []string, name string) string {
 }
 
 func usageErr() error {
-	return fmt.Errorf("usage: capataz issue <claim|resolve|status|list> <path> [args]")
+	return fmt.Errorf("usage: capataz issue <claim|resolve|status|comment|list|new> <path|feature> [args]")
 }

@@ -64,6 +64,21 @@ If the dispatch prompt (or the user) asks for a sanity check, do this **before r
 
 The subagent returns a short verdict + any gaps. Address real gaps, then resolve. This is a guard against fooling yourself — keep it light; the in-depth review is a separate fresh-context pass (the dashboard's `R`).
 
+### 4c. Isolated-worktree mode (only if the dispatch says so)
+
+If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (capataz dispatches parallel issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:
+
+- **Commit when you resolve.** Do your work as normal, but as part of resolving, commit it on that branch:
+
+  ```sh
+  git add -A && git commit -m "<feature>/NN: <what you did>"
+  ```
+
+  Do **not** merge and do **not** switch branches — capataz merges the branch back into the base later (operator-triggered), and a fresh `capataz-fix-conflict` session handles any conflict.
+- **The issue path in the prompt is absolute.** It points at the primary checkout's `.scratch/` (which is gitignored and therefore absent in the worktree). Use that absolute path verbatim for `capataz issue claim/resolve` — never a relative one.
+
+In the normal (non-worktree) case, behavior is unchanged: don't commit unless the user asks; just surface the diff.
+
 ### 5. Resolve it
 
 When the acceptance criteria are met and checks pass:
@@ -73,4 +88,4 @@ capataz issue resolve .scratch/<feature>/issues/NN-<slug>.md \
   --answer "One-paragraph summary of what shipped and where (key files, follow-ups)."
 ```
 
-This sets `Status: resolved` and appends your summary under an `## Answer` heading. Do not commit or push unless the user asks — surface the diff and let them decide.
+This sets `Status: resolved` and appends your summary under an `## Answer` heading. Do not commit or push unless the user asks — surface the diff and let them decide. (Exception: in isolated-worktree mode you **do** commit on the branch — see 4c.)

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"crypto/sha1"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bmena34/capataz/internal/issues"
+	"github.com/bmena34/capataz/internal/paths"
 	"github.com/bmena34/capataz/internal/worktree"
 )
 
@@ -41,6 +44,7 @@ func (m *model) syncSelectedIssues(force bool) {
 		m.issueRepo = repo
 		m.issueRepoName = short(repo)
 		m.issueCursor = 0
+		m.issueSelected = nil // the previous repo's issues are no longer in view
 	} else if !force {
 		return // same cwd and no forced refresh: keep the cache
 	}
@@ -80,6 +84,38 @@ func (m *model) loadIssues() {
 		}
 	}
 	m.clampIssueCursor()
+	m.refreshReadyMerges()
+}
+
+// mergeCandidate is one dispatched worktree branch ready to merge back: its
+// linked worktree path, the branch, and the resolved issue it implements.
+type mergeCandidate struct {
+	Path   string
+	Branch string
+	Issue  issues.Issue
+}
+
+// refreshReadyMerges recomputes the ready-to-merge set for issueRepo from the
+// live worktree list joined against the cached backlog. It shells out to git, so
+// it runs only from loadIssues (selection change or the forced tick refresh),
+// never on the render path. A ready branch is a capataz/-prefixed dispatch
+// branch whose backing issue is resolved (Bucket == "done").
+func (m *model) refreshReadyMerges() {
+	m.readyMerges = nil
+	if m.issueRepo == "" {
+		return
+	}
+	wts, err := worktree.ListWT(m.issueRepo)
+	if err != nil {
+		return // no worktrees / not a repo: nothing to merge, silently
+	}
+	for _, wt := range wts {
+		iss, ok := issues.MatchBranch(wt.Branch, m.issueList)
+		if !ok || issues.Bucket(iss) != "done" {
+			continue
+		}
+		m.readyMerges = append(m.readyMerges, mergeCandidate{Path: wt.Path, Branch: wt.Branch, Issue: iss})
+	}
 }
 
 func (m *model) clampIssueCursor() {
@@ -115,6 +151,24 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G":
 		m.issueCursor = len(m.issueList) - 1
 		m.clampIssueCursor()
+	case " ": // toggle multi-select on the cursor's issue (for parallel dispatch)
+		if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
+			if m.issueSelected == nil {
+				m.issueSelected = map[string]bool{}
+			}
+			path := m.issueList[m.issueCursor].Path
+			if m.issueSelected[path] {
+				delete(m.issueSelected, path)
+			} else {
+				m.issueSelected[path] = true
+			}
+		}
+	case "p": // dispatch the selected set in parallel (only if mutually safe)
+		return m.dispatchParallel(false)
+	case "P": // force parallel dispatch even when the set overlaps
+		return m.dispatchParallel(true)
+	case "m": // merge back the ready dispatched worktree branches (Round 2)
+		return m.mergeReady()
 	case "enter", "o":
 		if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 			m.startIssue = m.issueList[m.issueCursor]
@@ -158,6 +212,171 @@ func (m model) startReview(feature string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// selectedIssues returns the currently multi-selected issues, in list order.
+func (m model) selectedIssues() []issues.Issue {
+	if len(m.issueSelected) == 0 {
+		return nil
+	}
+	var out []issues.Issue
+	for _, iss := range m.issueList {
+		if m.issueSelected[iss.Path] {
+			out = append(out, iss)
+		}
+	}
+	return out
+}
+
+// dispatchParallel spawns one isolated-worktree session per selected issue. It
+// leaves the single-issue Enter path untouched — this is batches only. Unless
+// force is set it first checks the set is mutually parallel-safe (disjoint
+// Touches, no blocking edge, known scope); an unsafe set is refused with a hint
+// to press capital P to override. Per-issue worktree failures are reported but
+// don't abort the rest of the batch.
+func (m model) dispatchParallel(force bool) (tea.Model, tea.Cmd) {
+	sel := m.selectedIssues()
+	if len(sel) == 0 {
+		m.status = "select issues with space, then p to run them in parallel"
+		return m, nil
+	}
+	if os.Getenv("TMUX") == "" {
+		m.status = "can't spawn: capataz isn't in tmux"
+		return m, nil
+	}
+	if !force && !issues.MutuallyParallelSafe(sel) {
+		m.status = "selected set overlaps — press P to dispatch anyway"
+		return m, nil
+	}
+
+	dispatched := 0
+	for _, iss := range sel {
+		num := iss.Num
+		if num == "" {
+			num = "--"
+		}
+		leaf := iss.Feature + "-" + num + "-" + iss.Slug
+		branch := issues.DispatchBranch(iss)
+		dir := filepath.Join(paths.WorktreesDir(), repoWorktreeID(m.issueRepo), leaf)
+
+		if err := worktree.Add(m.issueRepo, dir, branch); err != nil {
+			m.status = "worktree for " + num + " failed: " + err.Error()
+			continue // don't abort the batch — dispatch the rest
+		}
+		name := iss.Feature + "-" + num
+		if _, err := newSessionWithSidebar(name, dir, worktreeDispatchPrompt(iss.Path, branch)); err != nil {
+			m.status = "session for " + num + " failed: " + err.Error()
+			continue
+		}
+		dispatched++
+	}
+
+	m.issueSelected = nil // clear the selection after a dispatch
+	m.mode = modeNormal
+	if dispatched > 0 {
+		m.status = fmt.Sprintf("dispatched %d parallel session(s)", dispatched)
+		if m.popup {
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+// mergeReady merges each ready dispatched worktree branch (Round 2) into the
+// primary checkout's CURRENT branch, in turn, without switching branches:
+//
+//   - clean merge: tear down the merged worktree + branch (RemoveMerged) and
+//     count it.
+//   - conflict (worktree.ErrConflict): STOP — leave the conflicted merge in the
+//     working tree and spawn a fresh session in the primary checkout to resolve
+//     it via the /capataz-fix-conflict skill. The conflicted worktree is left in
+//     place so the fix agent can reference it.
+//   - any other error: STOP with a clear status (the tree may be mid-merge).
+//
+// It reads the render-safe cache (readyMerges); a fresh scan happens on the next
+// forced tick. Plain merges run even outside tmux — only the fix-conflict spawn
+// needs tmux and degrades to a status message when $TMUX is unset.
+func (m model) mergeReady() (tea.Model, tea.Cmd) {
+	if len(m.readyMerges) == 0 {
+		m.status = "nothing ready to merge (resolve dispatched issues first)"
+		return m, nil
+	}
+	merged := 0
+	for _, c := range m.readyMerges {
+		err := worktree.Merge(m.issueRepo, c.Branch)
+		switch {
+		case err == nil:
+			if rmErr := worktree.RemoveMerged(m.issueRepo, c.Path, c.Branch); rmErr != nil {
+				m.status = fmt.Sprintf("merged %s but cleanup failed: %v", c.Branch, rmErr)
+				m.mode = modeNormal
+				return m, nil
+			}
+			merged++
+		case errors.Is(err, worktree.ErrConflict):
+			return m.resolveConflict(c, merged)
+		default:
+			m.status = fmt.Sprintf("merge of %s failed: %v", c.Branch, err)
+			m.mode = modeNormal
+			return m, nil
+		}
+	}
+	m.status = fmt.Sprintf("merged %d branch(es)", merged)
+	m.mode = modeNormal
+	return m, nil
+}
+
+// resolveConflict handles a conflicted merge mid-batch: it leaves the conflict
+// in the working tree and spawns a fresh session in the primary checkout running
+// the /capataz-fix-conflict skill to resolve, build, and commit the merge. merged
+// is how many branches landed cleanly before this one, for the status line.
+func (m model) resolveConflict(c mergeCandidate, merged int) (tea.Model, tea.Cmd) {
+	leaf := strings.TrimPrefix(c.Branch, issues.BranchPrefix)
+	if os.Getenv("TMUX") == "" {
+		m.status = fmt.Sprintf("conflict merging %s — resolve it manually (capataz isn't in tmux)", c.Branch)
+		m.mode = modeNormal
+		return m, nil
+	}
+	prompt := fmt.Sprintf("Use the /capataz-fix-conflict skill: a merge of branch %s into the base in this repo is in progress and conflicted. Resolve the conflicts, run the build/tests, and commit the merge.", c.Branch)
+	pane, err := newSessionWithSidebar("fixconflict-"+leaf, m.issueRepo, prompt)
+	if err != nil {
+		m.status = fmt.Sprintf("conflict merging %s and couldn't spawn resolver: %v", c.Branch, err)
+		m.mode = modeNormal
+		return m, nil
+	}
+	m.status = fmt.Sprintf("conflict merging %s — resolving in a fresh session", c.Branch)
+	if merged > 0 {
+		m.status = fmt.Sprintf("merged %d, then conflict on %s — resolving in a fresh session", merged, c.Branch)
+	}
+	m.mode = modeNormal
+	if jerr := jump(pane); jerr != nil {
+		m.status = "spawned resolver but couldn't switch: " + jerr.Error()
+		return m, nil
+	}
+	if m.popup {
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// worktreeDispatchPrompt is the opening prompt injected into each parallel
+// session: it points the agent at the issue's ABSOLUTE path (the .scratch
+// backlog is gitignored/absent in the linked worktree) and tells it to commit
+// on the branch without merging — capataz merges back later (Round 2).
+func worktreeDispatchPrompt(absIssuePath, branch string) string {
+	return fmt.Sprintf("Use the /capataz-work skill to work on the issue at %s. You are in an isolated git worktree on branch %s; commit your work on this branch when you resolve (git add -A && git commit) and do not merge — capataz merges it back later.", absIssuePath, branch)
+}
+
+// repoWorktreeID builds a single filesystem-safe path segment that disambiguates
+// a primary checkout under the shared worktrees dir: the repo's basename plus a
+// short hash of its absolute path, so two repos with the same basename don't
+// collide.
+func repoWorktreeID(repo string) string {
+	sum := sha1.Sum([]byte(repo))
+	base := sanitizeName(filepath.Base(strings.TrimRight(repo, "/")))
+	if base == "" {
+		base = "repo"
+	}
+	return fmt.Sprintf("%s-%x", base, sum[:4])
 }
 
 func (m model) handleStartWorkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -275,7 +494,7 @@ func (m model) issuesPopup(base string) string {
 		contentRows = 1
 	}
 
-	help := footerStyle.Render("↵ start work · R review · j/k move · Esc close")
+	help := footerStyle.Render("↵ start work · space select · p run parallel · R review · Esc close")
 	if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 		if f := m.issueList[m.issueCursor].Feature; m.featureAllDone(f) {
 			help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ "+f+" all resolved") +
@@ -285,6 +504,10 @@ func (m model) issuesPopup(base string) string {
 	if adv := parallelSafeAdvisory(m.issueList); adv != "" {
 		help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(adv) +
 			footerStyle.Render(" · ") + help
+	}
+	if n := len(m.readyMerges); n > 0 {
+		ready := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(fmt.Sprintf("%d ready to merge · m", n))
+		help = ready + footerStyle.Render(" · ") + help
 	}
 	title := "Issues · " + m.issueRepoName
 
@@ -327,14 +550,20 @@ func (m model) issueLines() ([]string, int) {
 	return lines, cursorLine
 }
 
-// issueRow formats one issue line: a select bar, number, status badge, title,
-// and a blocked marker. Column math is left to fitCell (panic-safe padding).
+// issueRow formats one issue line: a cursor bar, a multi-select checkbox, the
+// number, status badge, title, and a blocked marker. Column math is left to
+// fitCell (panic-safe padding).
 func (m model) issueRow(iss issues.Issue, selected bool) string {
 	num := iss.Num
 	if num == "" {
 		num = "--"
 	}
-	content := fmt.Sprintf("%s %s %s", dimStyle.Render(num), issueBadge(iss.Status), iss.Title)
+	// Multi-select checkbox: filled when this issue is in the dispatch set.
+	box := dimStyle.Render("☐")
+	if m.issueSelected[iss.Path] {
+		box = accentStyle.Render("☑")
+	}
+	content := fmt.Sprintf("%s %s %s %s", box, dimStyle.Render(num), issueBadge(iss.Status), iss.Title)
 	if iss.Blocked {
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  ⛔ blocked")
 	}

@@ -62,7 +62,8 @@ Keys inside the dashboard:
 | `r` | quick reply without leaving the dashboard |
 | `c` | conversation view |
 | `R` | rename the session |
-| `i` | issues — full-screen backlog for the selected repo, start work on one (use from the `prefix+g` popup) |
+| `i` | issues — full-screen backlog for the selected repo (use from the `prefix+g` popup) |
+| `space` / `p` / `m` | (in issues) multi-select · run selected in parallel worktrees · merge resolved branches back |
 | `l` | event log |
 | `x` | quit a session (graceful, with confirm) |
 | `?` | full keybinding help |
@@ -85,7 +86,7 @@ It tracks **only tmux sessions** — the ones it can actually act on. Task subag
 - **Per-issue sanity check** (opt-in via config `review.sanity_check`): before an agent resolves an issue, the `capataz-work` skill spawns a fresh-context subagent to check the change actually matches the issue's acceptance criteria — a guard against an agent fooling itself.
 - **Fresh full review** (`R` in the issues view): when a feature's issues are all resolved, press `R` to spawn a **new session** that runs the `capataz-review` skill — a clean context with no memory of how the code was written, so it judges soundness rather than trusting the implementers. Its findings are filed straight back into the backlog as new `ready-for-agent` issues, so the loop continues (review → issues → fix → review) until a review comes back clean.
 
-> **⚠️ Work one issue at a time (for now).** Every session capataz starts for an issue runs in the **same repo working tree**. Putting **two or more agents on issues in the same repo at once** means they edit that one working tree simultaneously — overlapping edits clobber each other with no git conflict markers to catch it, and each agent's tests run against the others' half-finished changes. Dispatch, let it finish (and review), then dispatch the next. Safe **parallel dispatch** — giving each agent its own git worktree so the work is isolated — is a planned future feature, not something to rely on today.
+> **⚠️ For parallelism, use `p` — don't hand-start overlapping agents.** A single-issue dispatch (`Enter`) and any session you start by hand run in the **same repo working tree**, so running two of *those* on one repo at once lets them clobber each other with no conflict markers. Parallelism is what the multi-select `p` flow is for: it isolates each agent in its own git worktree, and only offers to run a set it believes is parallel-safe. So: `p` a parallel-safe batch, or work one issue at a time — just don't manually run several agents in the same working tree.
 
 Issues live as plain markdown, one feature per directory:
 
@@ -113,7 +114,7 @@ Touches: internal/tui/, main.go
 - **`capataz-work`** — when you start an issue, the agent claims it (`Status: claimed`), implements the slice, and resolves it (`Status: resolved`).
 - **`capataz-review`** — the fresh-context reviewer behind `R`.
 
-**Parallel-safe advisory.** From the `Touches:` lines, capataz derives which *ready* issues form a parallel-safe set — pairwise-disjoint files and no blocking edge between them — and shows it (`⇉ parallel-safe: 01, 02`) in the issues view. An issue with no `Touches:` is treated as touching everything (never parallel-safe), so the hint is conservative. It's **advisory today** (see the one-at-a-time warning above); it becomes actionable once worktree isolation lands.
+**Parallel dispatch.** From the `Touches:` lines, capataz derives which *ready* issues form a parallel-safe set — pairwise-disjoint files and no blocking edge between them — and shows it (`⇉ parallel-safe: 01, 02`) in the issues view. In the issue view you can `space` to **multi-select** issues and `p` to **run them in parallel**: each gets its own git worktree (`~/.capataz/worktrees/…`) on a `capataz/<feature>-NN-slug` branch with its own session. If the selected set isn't actually parallel-safe (overlapping files or a blocking edge — an issue with no `Touches:` counts as touching everything), capataz warns and asks for a capital `P` to force. When those issues resolve, `m` **merges** the branches back into your base one at a time; a clean merge lands and cleans up its worktree, and a conflicting one (a `Touches` misprediction) spawns a fresh **`capataz-fix-conflict`** session to resolve it. Single-issue dispatch (`Enter`) still runs in your main working tree unchanged.
 
 The markdown files are the source of truth; the dashboard re-reads them live, so claims and resolutions show up as agents make them. You can also drive the backlog from the command line:
 
@@ -122,6 +123,7 @@ capataz issue list .                       # show this repo's backlog
 capataz issue new  <feature> "<title>" --body "…"   # file a new issue
 capataz issue claim   .scratch/f/issues/01-x.md
 capataz issue resolve .scratch/f/issues/01-x.md --answer "what shipped"
+capataz issue comment .scratch/f/issues/01-x.md "a note under ## Comments"
 ```
 
 ## Configuration

@@ -28,6 +28,10 @@ func ConfigDir() string {
 // ConfigFile is the user config file (~/.config/capataz/config.json).
 func ConfigFile() string { return filepath.Join(ConfigDir(), "config.json") }
 
+// WorktreesDir holds the linked git worktrees capataz creates for parallel
+// dispatch (~/.capataz/worktrees), namespaced per repo underneath.
+func WorktreesDir() string { return filepath.Join(Dir(), "worktrees") }
+
 // Sock is the Unix socket the daemon listens on.
 func Sock() string { return filepath.Join(Dir(), "capataz.sock") }
 
