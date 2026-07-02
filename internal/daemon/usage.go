@@ -85,9 +85,24 @@ func fetchUsage(cfg config.Usage) (proto.Usage, error) {
 			u.WeeklyPct, u.WeeklyReset = int(l.Percent+0.5), rfcNanos(l.ResetsAt)
 		}
 	}
-	if !matched { // fall back to the five_hour/seven_day fields
-		u.SessionPct, u.SessionReset = int(data.FiveHour.Utilization+0.5), rfcNanos(data.FiveHour.ResetsAt)
-		u.WeeklyPct, u.WeeklyReset = int(data.SevenDay.Utilization+0.5), rfcNanos(data.SevenDay.ResetsAt)
+	if !matched {
+		if data.FiveHour.Utilization > 0 || data.SevenDay.Utilization > 0 {
+			// Older response shape — still rate-limited.
+			u.SessionPct = int(data.FiveHour.Utilization + 0.5)
+			u.SessionReset = rfcNanos(data.FiveHour.ResetsAt)
+			u.WeeklyPct = int(data.SevenDay.Utilization + 0.5)
+			u.WeeklyReset = rfcNanos(data.SevenDay.ResetsAt)
+			u.PlanType = "pro"
+		} else {
+			// No rate-limit data at all — likely enterprise / API billing.
+			u.PlanType = "api"
+		}
+	} else {
+		u.PlanType = "pro"
+	}
+	// Config override wins.
+	if cfg.PlanType == "pro" || cfg.PlanType == "api" {
+		u.PlanType = cfg.PlanType
 	}
 	return u, nil
 }

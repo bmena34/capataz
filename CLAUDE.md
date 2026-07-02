@@ -9,9 +9,10 @@ A terminal dashboard that supervises Claude Code agents running in tmux. **macOS
 ## Build / test / run
 
 ```sh
-go build -o capataz .                       # build the binary
-go vet ./...                                # vet
-go test ./...                               # tests
+make build                                  # build ./capataz (local dev binary)
+make install                                # build + sudo install to /usr/local/bin
+make vet                                    # go vet ./...
+make test                                   # go test ./...
 go test ./internal/tui -run TestRenderNoPanic   # render regression (every size 1×1..80×50)
 ```
 

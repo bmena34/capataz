@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bmena34/capataz/internal/logging"
 	"github.com/bmena34/capataz/internal/paths"
@@ -79,6 +80,9 @@ type model struct {
 	// the config width and updates when the user manually resizes the pane.
 	lastWinWidth int
 	desiredWidth int
+	// attachedSession is the tmux session name the user's client is currently
+	// viewing, so the dashboard can mark which Claude session they're attached to.
+	attachedSession string
 }
 
 // Run starts the dashboard. It blocks until the user quits.
@@ -96,6 +100,7 @@ func Run() error {
 	}
 	m.popup = os.Getenv("CAPATAZ_POPUP") == "1"
 	m.paneSession = livePaneSessions()
+	m.attachedSession = currentAttachedSession()
 	writePID()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -203,6 +208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pm := livePaneSessions(); pm != nil {
 			m.paneSession = pm
 		}
+		m.attachedSession = currentAttachedSession()
 		if m.mode == modeConvo {
 			m.refreshConvo(true)
 		}
@@ -1060,10 +1066,15 @@ func (m model) detailBody(innerW, rows int) string {
 	b.WriteString(div + "\n")
 	b.WriteString(headerStyle.Render("Plan usage") + "\n")
 	if m.limits.OK {
-		b.WriteString(usageLine("session", m.limits.SessionPct, nanoTime(m.limits.SessionReset)))
-		b.WriteString(usageLine("weekly", m.limits.WeeklyPct, nanoTime(m.limits.WeeklyReset)))
+		switch m.limits.PlanType {
+		case "api":
+			b.WriteString(dimStyle.Render("Enterprise / API plan · billed per token") + "\n")
+		default: // "pro" or legacy empty
+			b.WriteString(usageLine("session", m.limits.SessionPct, nanoTime(m.limits.SessionReset)))
+			b.WriteString(usageLine("weekly", m.limits.WeeklyPct, nanoTime(m.limits.WeeklyReset)))
+		}
 	} else {
-		b.WriteString(dimStyle.Render("fetching… (needs keychain access)") + "\n")
+		b.WriteString(dimStyle.Render("unavailable · check keychain / config") + "\n")
 	}
 	return b.String()
 }
@@ -1109,9 +1120,14 @@ func (m model) listBody(group []proto.Session, innerW int, needsPanel bool) stri
 		}
 		return dimStyle.Render("  —")
 	}
+	attachedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // green ▸ for attached
 	var lines []string
 	for _, s := range group {
+		// ▸ marks the session the user's tmux client is currently attached to.
 		mark := " "
+		if m.attachedSession != "" && m.paneSession[s.TmuxPane] == m.attachedSession {
+			mark = attachedStyle.Render("▸")
+		}
 		// Trailing context-usage % (exactly 5 cells), colored by fill, kept last
 		// so the ANSI doesn't disturb column alignment.
 		ctx := dimStyle.Render("    —")
@@ -1138,9 +1154,8 @@ func (m model) listBody(group []proto.Session, innerW int, needsPanel bool) stri
 	return strings.Join(lines, "\n")
 }
 
-// keybarLines builds the bottom footer: a single curated key hint (the full list
-// lives in the `?` help popup) plus, only when present, a transient status line.
-// The leading dot shows daemon connection.
+// keybarLines builds the bottom footer: hint text left-aligned, connection dot
+// right-aligned. The dot (● green/red) indicates daemon connection at a glance.
 func (m model) keybarLines() []string {
 	dot := badDot
 	if m.connected {
@@ -1152,7 +1167,16 @@ func (m model) keybarLines() []string {
 	}
 
 	hint := keybarStyle.Render("↵ switch · n new · x kill · ? keys")
-	lines := []string{fitCell(" "+dot+" "+hint, width)}
+	hintW := ansi.StringWidth(hint)
+	dotW := ansi.StringWidth(dot)
+	// Left: one leading space + hint. Right: dot + one trailing space.
+	// Fill the middle with spaces to push the dot to the right edge.
+	gap := width - 1 - hintW - dotW - 1
+	if gap < 1 {
+		gap = 1
+	}
+	line := " " + hint + strings.Repeat(" ", gap) + dot + " "
+	lines := []string{fitCell(line, width)}
 
 	// Transient status (kill/reply/errors) on a second line. Suppress connection
 	// chatter — the dot already conveys that.

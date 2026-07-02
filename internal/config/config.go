@@ -25,6 +25,9 @@ type Usage struct {
 	URL             string `json:"url"`
 	KeychainService string `json:"keychain_service"`
 	PollSeconds     int    `json:"poll_seconds"`
+	// PlanType overrides auto-detection: "pro" shows session/weekly rate-limit bars;
+	// "api" shows an enterprise/per-token label instead. Leave blank to auto-detect.
+	PlanType string `json:"plan_type"`
 }
 
 // Sidebar controls the dashboard sidebar pane.

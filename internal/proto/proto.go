@@ -113,11 +113,12 @@ type Msg struct {
 // daemon polls it once and pushes it to every dashboard, so N sidebars don't
 // each hit the API. Reset times are unix nanos (0 = unknown).
 type Usage struct {
-	SessionPct   int   `json:"session_pct"`   // 5-hour "current session" utilization
-	SessionReset int64 `json:"session_reset"` // unix nanos
-	WeeklyPct    int   `json:"weekly_pct"`    // 7-day "all models" utilization
-	WeeklyReset  int64 `json:"weekly_reset"`  // unix nanos
-	OK           bool  `json:"ok"`
+	PlanType     string `json:"plan_type"`     // "pro" (rate limits) | "api" (per-token billing) | ""
+	SessionPct   int    `json:"session_pct"`   // 5-hour "current session" utilization
+	SessionReset int64  `json:"session_reset"` // unix nanos
+	WeeklyPct    int    `json:"weekly_pct"`    // 7-day "all models" utilization
+	WeeklyReset  int64  `json:"weekly_reset"`  // unix nanos
+	OK           bool   `json:"ok"`
 }
 
 // Push is a daemon->TUI message.

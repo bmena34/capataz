@@ -373,6 +373,21 @@ func sessionBase(dir string) string {
 	return b
 }
 
+// currentAttachedSession returns the tmux session name that the current client
+// is viewing, used to mark which Claude session the user is actively attached to.
+func currentAttachedSession() string {
+	out, err := exec.Command("tmux", "list-clients", "-F", "#{client_session}").Output()
+	if err != nil {
+		return ""
+	}
+	for _, ln := range strings.Split(string(out), "\n") {
+		if s := strings.TrimSpace(ln); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // livePaneSessions maps each existing pane id to its tmux session name, or nil
 // if tmux can't be queried. Used to label sessions in the dashboard.
 func livePaneSessions() map[string]string {

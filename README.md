@@ -20,21 +20,14 @@ When you run several Claude Code agents at once, it's hard to tell which one is 
 - **macOS** (uses the macOS Keychain and `launchd`)
 - **tmux** — agents run in tmux panes; the dashboard drives them via tmux
 - **Claude Code** — `capataz` wires into its hooks
-- **Go 1.24+** — to build/install
+- **Go 1.26+** — to build
 
 ## Install
 
 ```sh
-go install github.com/bmena34/capataz@latest   # builds the `capataz` binary into $GOBIN
-capataz install                                 # wire Claude Code hooks + start the daemon
-```
-
-Or build from source:
-
-```sh
 git clone https://github.com/bmena34/capataz && cd capataz
-go build -o capataz . && go install .
-capataz install
+make install        # builds and copies to /usr/local/bin (prompts for sudo password)
+capataz install     # wire Claude Code hooks + start the daemon
 ```
 
 `capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
@@ -92,13 +85,16 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
     "enabled": true,
     "url": "https://api.anthropic.com/api/oauth/usage",
     "keychain_service": "Claude Code-credentials",
-    "poll_seconds": 300
+    "poll_seconds": 300,
+    "plan_type": ""
   },
   "sidebar": { "width": 40 }
 }
 ```
 
 > **Note on the usage gauge.** To show your plan usage (current-session and weekly %), `capataz` reads your Claude Code OAuth token from the macOS Keychain and calls `api/oauth/usage` — the **same endpoint Claude Code's `/usage` uses**. This is *unofficial* and undocumented: it may change or stop working at any time. It only ever reads *your* token to display *your* usage; nothing is sent anywhere else. Set `usage.enabled` to `false` to turn it off entirely, or update `url` / `keychain_service` if Anthropic changes them.
+>
+> Set `plan_type` to `"api"` if you're on an enterprise or API-billing plan — this replaces the session/weekly bars with a "billed per token" label. Leave blank to auto-detect from the API response.
 
 `CAPATAZ_CONTEXT_LIMIT` (e.g. `1m`, `200k`) overrides the context-window size used for the per-session gauge. `CAPATAZ_DEBUG=1` enables verbose logging (`capataz logs`).
 
