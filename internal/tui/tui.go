@@ -104,10 +104,11 @@ type model struct {
 	// Path (stable across reloads). Cleared after a dispatch and when the selection
 	// moves to a different repo (its issues are no longer in view).
 	issueSelected map[string]bool
-	// startIssue/startPane back the start-work chooser (modeStartWork): the issue
-	// picked and the selected session's pane (empty when it has none / is dead).
+	// startIssue backs the start-work chooser (modeStartWork): the issue picked.
+	// The hand-off target pane is NOT cached here — it's resolved live from
+	// m.current() when h is pressed, so a pane the daemon's sweep pruned while
+	// the chooser was open can't be replied to (see handleStartWorkKey).
 	startIssue issues.Issue
-	startPane  string
 	// readyMerges caches the dispatched worktree branches whose issue is resolved
 	// and so are ready to merge back (Round 2). Like issueList it's refreshed off
 	// the render path (syncSelectedIssues shells out to git worktree list), so the

@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // scratchDir is the per-repo directory the planning skills write issues into.
@@ -140,18 +142,38 @@ func scanFeature(dir, slug string) Feature {
 
 // markBlocked sets Blocked on each issue whose Blocked-by list names a sibling
 // that is not yet Done. Unknown numbers are treated as still-blocking so a
-// dangling reference errs toward "not ready".
+// dangling reference errs toward "not ready". Two edge cases are handled
+// deliberately: an issue never blocks itself (a self-referencing number is
+// skipped), and when several files share a number a blocker counts as satisfied
+// only when *every* file with that number is Done — so a duplicate can't
+// silently resolve a block against the wrong file.
 func markBlocked(list []Issue) {
-	status := make(map[string]string, len(list))
+	byNum := make(map[string][]string, len(list)) // number -> each file's status
 	for _, iss := range list {
 		if iss.Num != "" {
-			status[iss.Num] = iss.Status
+			byNum[iss.Num] = append(byNum[iss.Num], iss.Status)
 		}
+	}
+	// numDone reports whether a blocker number is satisfied: it must name at
+	// least one issue, and every issue sharing that number must be Done.
+	numDone := func(num string) bool {
+		statuses, ok := byNum[num]
+		if !ok || len(statuses) == 0 {
+			return false // unknown/dangling number: still blocking
+		}
+		for _, s := range statuses {
+			if !Done(s) {
+				return false
+			}
+		}
+		return true
 	}
 	for i := range list {
 		for _, b := range list[i].BlockedBy {
-			s, ok := status[b]
-			if !ok || !Done(s) {
+			if b == list[i].Num {
+				continue // an issue never blocks itself
+			}
+			if !numDone(b) {
 				list[i].Blocked = true
 				break
 			}
@@ -411,7 +433,8 @@ func slugToTitle(slug string) string {
 	}
 	words := strings.Split(strings.ReplaceAll(slug, "_", "-"), "-")
 	if len(words) > 0 && words[0] != "" {
-		words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+		r, size := utf8.DecodeRuneInString(words[0])
+		words[0] = string(unicode.ToUpper(r)) + words[0][size:]
 	}
 	return strings.Join(words, " ")
 }

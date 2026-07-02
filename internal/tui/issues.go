@@ -172,10 +172,6 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "o":
 		if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 			m.startIssue = m.issueList[m.issueCursor]
-			m.startPane = ""
-			if s, ok := m.current(); ok {
-				m.startPane = s.TmuxPane
-			}
 			m.mode = modeStartWork
 		}
 	case "R": // in-depth review of the selected feature in a fresh session
@@ -411,34 +407,56 @@ func (m model) handleStartWorkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "h": // hand the issue to the currently-selected running session
-		if m.startPane == "" {
-			m.status = "selected session has no tmux pane"
+		// Resolve the target pane LIVE, at action time — not when the chooser
+		// opened. The chooser is modal (selection can't change underneath it),
+		// but the daemon's ~5s sweep can prune a session whose pane died between
+		// open and now; reading m.current() here means we never reply() to a
+		// pane the daemon has already dropped.
+		sel, ok := m.current()
+		if !ok || sel.TmuxPane == "" {
+			m.status = "selected session's pane is gone"
 			m.mode = modeNormal
 			return m, nil
 		}
-		if err := reply(m.startPane, m.issuePrompt()); err != nil {
+		pane := sel.TmuxPane
+		if err := reply(pane, m.issuePrompt()); err != nil {
 			m.status = "hand-off failed: " + err.Error()
-		} else {
-			m.status = "sent " + m.startIssue.Title + " to " + m.issueRepoName
+			m.mode = modeNormal
+			return m, nil
 		}
+		m.status = "sent " + m.startIssue.Title + " to " + m.issueRepoName
 		m.mode = modeNormal
+		// Match the "selecting acts and quits" popup contract (like the n
+		// branch and normal Enter): switch the client to the session that
+		// received the work, then dismiss the popup. The sidebar stays open.
+		if err := jump(pane); err != nil {
+			m.status = "sent but couldn't switch: " + err.Error()
+			return m, nil
+		}
+		if m.popup {
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 	return m, nil
 }
 
-// issuePrompt is the instruction injected into the agent: run the capataz-work
-// skill on this issue. The path is relative to the repo (both dispatch targets
-// run in the repo), falling back to the absolute path if that can't be computed.
-// When the sanity-check option is on, it asks for the pre-resolve subagent pass.
+// issuePrompt is the instruction injected into the dispatched session (both the
+// new-session and hand-off paths). The session acts as an ORCHESTRATOR: it
+// delegates the actual work to a subagent so its own main-thread context stays
+// clean. capataz shows that subagent as a ⊂N count on the session's row while
+// it works. The path is relative to the repo (the session runs there), falling
+// back to absolute. When the sanity-check option is on, the check runs at the
+// orchestrator level (a second subagent) — subagents can't nest, so it can't
+// live inside the implementation subagent.
 func (m model) issuePrompt() string {
 	path := m.startIssue.Path
 	if rel, err := filepath.Rel(m.issueRepo, m.startIssue.Path); err == nil && !strings.HasPrefix(rel, "..") {
 		path = rel
 	}
-	prompt := fmt.Sprintf("Use the /capataz-work skill to work on the issue at %s", path)
+	prompt := fmt.Sprintf("Orchestrate the issue at %s: use the Agent tool to spawn a subagent that works it end to end with the /capataz-work skill (claim, implement, build/test, resolve). Don't implement in this thread — delegate to the subagent, then relay its result; if it reports blocked or needs-info, surface that.", path)
 	if conf().Review.SanityCheck {
-		prompt += ". Run the optional sanity-check subagent before resolving."
+		prompt += " Sanity check: have the implementation subagent stop after implementing (before it resolves) and hand back its diff, then spawn a separate fresh subagent to sanity-check that diff against the acceptance criteria; only resolve once it passes."
 	}
 	return prompt
 }
@@ -734,7 +752,7 @@ func issueTrackerRow(iss issues.Issue) string {
 // to the currently-selected running session.
 func (m model) startWorkPopup(base string) string {
 	handLine := dimStyle.Render("  h  hand to a running session (none selected)")
-	if m.startPane != "" {
+	if sel, ok := m.current(); ok && sel.TmuxPane != "" {
 		handLine = "  " + accentStyle.Render("h") + "  hand to " + accentStyle.Render(m.issueRepoName) + " (selected session)"
 	}
 	lines := []string{

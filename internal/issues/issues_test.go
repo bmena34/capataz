@@ -131,6 +131,49 @@ func TestBlockedByResolvedBlocker(t *testing.T) {
 	}
 }
 
+func TestBlockedBySelfReferenceNotBlocked(t *testing.T) {
+	repo := t.TempDir()
+	// An issue that lists its own number must not be marked blocked by itself.
+	writeIssue(t, repo, "f", "02-selfref.md", "# Self\n\nStatus: ready-for-agent\nBlocked by: 02\n")
+	feats, _ := Scan(repo)
+	if feats[0].Issues[0].Blocked {
+		t.Errorf("issue listing its own number should not be blocked")
+	}
+}
+
+func TestBlockedByDuplicateNumberAllMustBeDone(t *testing.T) {
+	repo := t.TempDir()
+	// Two files share number 01: one resolved, one not. A sibling blocked by 01
+	// must stay blocked, not silently resolve against the resolved copy.
+	writeIssue(t, repo, "f", "01-a.md", "# A\n\nStatus: resolved\n")
+	writeIssue(t, repo, "f", "01-b.md", "# B\n\nStatus: ready-for-agent\n")
+	writeIssue(t, repo, "f", "02-dep.md", "# Dep\n\nStatus: ready-for-agent\nBlocked by: 01\n")
+	feats, _ := Scan(repo)
+	var dep *Issue
+	for i := range feats[0].Issues {
+		if feats[0].Issues[i].Slug == "dep" {
+			dep = &feats[0].Issues[i]
+		}
+	}
+	if dep == nil || !dep.Blocked {
+		t.Errorf("02 should stay blocked while a file sharing blocker number 01 is not resolved")
+	}
+}
+
+func TestBlockedByDuplicateNumberAllDoneUnblocks(t *testing.T) {
+	repo := t.TempDir()
+	// Both 01 files done (resolved + wontfix) -> the 01 blocker is satisfied.
+	writeIssue(t, repo, "f", "01-a.md", "# A\n\nStatus: resolved\n")
+	writeIssue(t, repo, "f", "01-b.md", "# B\n\nStatus: wontfix\n")
+	writeIssue(t, repo, "f", "02-dep.md", "# Dep\n\nStatus: ready-for-agent\nBlocked by: 01\n")
+	feats, _ := Scan(repo)
+	for _, iss := range feats[0].Issues {
+		if iss.Slug == "dep" && iss.Blocked {
+			t.Errorf("02 should be unblocked once every file numbered 01 is done")
+		}
+	}
+}
+
 func TestIssuesSortedByNum(t *testing.T) {
 	repo := t.TempDir()
 	writeIssue(t, repo, "f", "03-c.md", "# C\n")
@@ -256,6 +299,23 @@ func TestSlugify(t *testing.T) {
 	for in, want := range cases {
 		if got := slugify(in); got != want {
 			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSlugToTitle(t *testing.T) {
+	cases := map[string]string{
+		"add-login-form": "Add login form",
+		"single":         "Single",
+		"under_score":    "Under score",
+		"":               "(untitled)",
+		// Non-ASCII first rune must uppercase correctly, not corrupt the byte.
+		"éclair-au-chocolat": "Éclair au chocolat",
+		"über-menu":          "Über menu",
+	}
+	for in, want := range cases {
+		if got := slugToTitle(in); got != want {
+			t.Errorf("slugToTitle(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

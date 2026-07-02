@@ -64,6 +64,8 @@ If the dispatch prompt (or the user) asks for a sanity check, do this **before r
 
 The subagent returns a short verdict + any gaps. Address real gaps, then resolve. This is a guard against fooling yourself — keep it light; the in-depth review is a separate fresh-context pass (the dashboard's `R`).
 
+**If you are yourself a subagent** (capataz dispatch delegates the work to a subagent), you can't spawn another one — skip this step. The orchestrator that dispatched you runs the sanity check instead.
+
 ### 4c. Isolated-worktree mode (only if the dispatch says so)
 
 If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (capataz dispatches parallel issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:

@@ -79,7 +79,7 @@ It tracks **only tmux sessions** — the ones it can actually act on. Task subag
 
 ## Issue tracking
 
-`capataz` reads a per-repo backlog of markdown issues and lets you put an agent on one. The **sidebar** shows a concise status tracker — the backlog of the selected session's repo, one dot per issue, sorted attention-first (blocked / todo / doing / done) with a counts summary. To **act** on the backlog, open the **popup** (`prefix + g`) and press **`i`**: browse the issues and `Enter` on one to start work, either in a **new session** or by handing it to the session you have selected.
+`capataz` reads a per-repo backlog of markdown issues and lets you put an agent on one. The **sidebar** shows a concise status tracker — the backlog of the selected session's repo, one dot per issue, sorted attention-first (blocked / todo / doing / done) with a counts summary. To **act** on the backlog, open the **popup** (`prefix + g`) and press **`i`**: browse the issues and `Enter` on one to start work, either in a **new session** or by handing it to the session you have selected. Either way the receiving session acts as an **orchestrator** — it delegates the actual work to a **subagent** (shown as a `⊂N` count on its row) so its own main-thread context stays clean.
 
 **The review loop.** Two optional review steps keep the work honest:
 
