@@ -289,6 +289,119 @@ func TestCreateConcurrentNoDuplicateNumbers(t *testing.T) {
 	}
 }
 
+// claimStatus reads back the parsed Status of an issue file for claim tests.
+func claimStatus(t *testing.T, path string) string {
+	t.Helper()
+	return parseIssue(path, "").Status
+}
+
+func TestClaimReadyForAgentSucceeds(t *testing.T) {
+	repo := t.TempDir()
+	path := writeIssue(t, repo, "f", "01-x.md", "# X\n\nStatus: ready-for-agent\nType: task\n\n## Body\n")
+	if err := claimCLI(path, false); err != nil {
+		t.Fatalf("claim ready-for-agent should succeed, got %v", err)
+	}
+	if got := claimStatus(t, path); got != StatusClaimed {
+		t.Errorf("status = %q, want %q", got, StatusClaimed)
+	}
+}
+
+func TestClaimAlreadyClaimedErrors(t *testing.T) {
+	repo := t.TempDir()
+	path := writeIssue(t, repo, "f", "01-x.md", "# X\n\nStatus: claimed\n")
+	err := claimCLI(path, false)
+	if err == nil {
+		t.Fatal("claim on an already-claimed issue should error")
+	}
+	if !strings.Contains(err.Error(), "already claimed") {
+		t.Errorf("error = %q, want it to mention 'already claimed'", err)
+	}
+	// The status must be untouched by a rejected claim.
+	if got := claimStatus(t, path); got != StatusClaimed {
+		t.Errorf("rejected claim changed status to %q", got)
+	}
+}
+
+func TestClaimResolvedErrors(t *testing.T) {
+	repo := t.TempDir()
+	path := writeIssue(t, repo, "f", "01-x.md", "# X\n\nStatus: resolved\n")
+	err := claimCLI(path, false)
+	if err == nil {
+		t.Fatal("claim on a resolved issue should error")
+	}
+	if !strings.Contains(err.Error(), "not claimable") || !strings.Contains(err.Error(), StatusResolved) {
+		t.Errorf("error = %q, want 'not claimable: resolved'", err)
+	}
+	if got := claimStatus(t, path); got != StatusResolved {
+		t.Errorf("rejected claim changed status to %q", got)
+	}
+}
+
+func TestClaimForceOverridesStateCheck(t *testing.T) {
+	repo := t.TempDir()
+	// --force must claim an issue in any state (here already claimed, and resolved).
+	for _, start := range []string{StatusClaimed, StatusResolved, StatusWontfix} {
+		path := writeIssue(t, repo, "f", "01-x.md", "# X\n\nStatus: "+start+"\n")
+		if err := claimCLI(path, true); err != nil {
+			t.Fatalf("claim --force on %q should succeed, got %v", start, err)
+		}
+		if got := claimStatus(t, path); got != StatusClaimed {
+			t.Errorf("after --force from %q, status = %q, want claimed", start, got)
+		}
+	}
+}
+
+// TestClaimConcurrentSingleWinner is the AC #3 guard: N goroutines race to claim
+// one ready-for-agent issue; the per-file lock + in-lock re-read must yield
+// exactly one winner and (N-1) "already claimed" errors. Run with -race.
+func TestClaimConcurrentSingleWinner(t *testing.T) {
+	repo := t.TempDir()
+	path := writeIssue(t, repo, "f", "01-x.md", "# X\n\nStatus: ready-for-agent\n")
+
+	const n = 16
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		wins    int
+		claimed int // count of "already claimed" errors
+		others  []error
+	)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release all goroutines together to maximize contention
+			err := claimCLI(path, false)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				wins++
+			case strings.Contains(err.Error(), "already claimed"):
+				claimed++
+			default:
+				others = append(others, err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("want exactly 1 winner, got %d", wins)
+	}
+	if claimed != n-1 {
+		t.Errorf("want %d 'already claimed' errors, got %d", n-1, claimed)
+	}
+	if len(others) != 0 {
+		t.Errorf("unexpected errors: %v", others)
+	}
+	if got := claimStatus(t, path); got != StatusClaimed {
+		t.Errorf("final status = %q, want claimed", got)
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	cases := map[string]string{
 		"Add the Retry Logic!": "add-the-retry-logic",

@@ -36,7 +36,8 @@ func Run(args []string) error {
 		if len(args) < 2 {
 			return usageErr()
 		}
-		return setStatusCLI(args[1], StatusClaimed)
+		force := hasFlag(args[2:], "--force")
+		return claimCLI(args[1], force)
 	case "resolve":
 		if len(args) < 2 {
 			return usageErr()
@@ -81,6 +82,55 @@ func setStatusCLI(path, status string) error {
 	}
 	fmt.Printf("%s → Status: %s\n", path, status)
 	return nil
+}
+
+// claimCLI is the M1→M2 claim boundary: an atomic compare-and-set that moves an
+// issue from ready-for-agent to claimed. Unlike setStatusCLI it is NOT
+// unconditional — only a ready-for-agent issue is claimable, so two agents can't
+// both claim the same file and silently clobber each other. --force bypasses the
+// state check (operator override / re-claim) but still takes the lock.
+//
+// Atomicity: the read-current-status → check → write sequence runs inside a
+// per-issue-file O_EXCL lock (lockClaim, keyed on the issue file, not the feature
+// dir), and the status is re-read from disk INSIDE the lock so two near-
+// simultaneous claims can't both pass the check. resolve/status stay
+// unconditional — this strictness is scoped to claim.
+func claimCLI(path string, force bool) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("issue file not found: %s", path)
+	}
+
+	unlock := lockClaim(path)
+	defer unlock()
+
+	if !force {
+		// Re-read the status from disk inside the lock so the check reflects any
+		// claim that landed while we were waiting for the lock.
+		status := normStatus(readStatus(path))
+		switch status {
+		case StatusReadyForAgent:
+			// claimable — fall through
+		case StatusClaimed:
+			return fmt.Errorf("%s already claimed (use --force to re-claim)", path)
+		default:
+			return fmt.Errorf("%s not claimable: %s (use --force to override)", path, status)
+		}
+	}
+
+	if err := SetStatus(path, StatusClaimed); err != nil {
+		return err
+	}
+	fmt.Printf("%s → Status: %s\n", path, StatusClaimed)
+	return nil
+}
+
+// readStatus reads the current Status of an issue file by reusing parseIssue
+// (the same tolerant header parser Scan uses), so claim sees exactly the status
+// the dashboard does. Returns "" when the file is unreadable or has no Status
+// line — normStatus("") never matches a claimable state, so a malformed file is
+// treated as not-claimable rather than silently claimed.
+func readStatus(path string) string {
+	return parseIssue(path, "").Status
 }
 
 // create writes a new ready-for-agent issue at .scratch/<feature>/issues/NN-slug.md,
@@ -157,6 +207,27 @@ func lockFeature(dir string) func() {
 		}
 		if fi, err := os.Stat(lock); err == nil && time.Since(fi.ModTime()) > 5*time.Second {
 			os.Remove(lock) // steal a stale lock left by a crashed creator
+			continue
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return func() {} // gave up waiting; proceed unlocked (degrade, don't hang)
+}
+
+// lockClaim serializes concurrent `issue claim` calls against a single issue
+// file. Same O_EXCL best-effort scheme as lockFeature, but keyed on the issue
+// FILE (<path>.capataz-claim.lock) rather than the feature dir, so it gates the
+// per-file compare-and-set without blocking claims of unrelated issues. The lock
+// file is not a .md and is ignored by Scan/parseIssue.
+func lockClaim(path string) func() {
+	lock := path + ".capataz-claim.lock"
+	for i := 0; i < 100; i++ {
+		if f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
+			f.Close()
+			return func() { os.Remove(lock) }
+		}
+		if fi, err := os.Stat(lock); err == nil && time.Since(fi.ModTime()) > 5*time.Second {
+			os.Remove(lock) // steal a stale lock left by a crashed claimer
 			continue
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -290,6 +361,16 @@ func flagValue(args []string, name string) string {
 	return ""
 }
 
+// hasFlag reports whether a bare flag (e.g. --force) is present in args.
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
 func usageErr() error {
-	return fmt.Errorf("usage: capataz issue <claim|resolve|status|comment|list|new> <path|feature> [args]")
+	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|list|new> <path|feature> [args]")
 }

@@ -161,7 +161,7 @@ capataz attach         dock a dashboard sidebar in the current tmux window
 capataz keybind [k]    bind prefix+k (default g) to the popup; also `attach` / `nav`
 capataz statusline     show a "needs you" badge in tmux (off to remove)
 capataz config         print the config file path + contents
-capataz issue …        claim/resolve/list local .scratch issues (used by skills)
+capataz issue …        claim/resolve/status/comment/list/new local .scratch issues (used by skills)
 capataz install        wire hooks, install skills + start the daemon
 capataz uninstall      remove hooks, skills + stop the daemon
 capataz status         show agent + daemon state

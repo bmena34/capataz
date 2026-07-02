@@ -7,6 +7,8 @@ description: Break a plan, PRD, or loose idea into tracer-bullet vertical slices
 
 Take a plan / PRD / loose idea and turn it into a set of independently-workable issues in this repo's `.scratch/` backlog. This is the capataz-native replacement for mattpocock's `/to-issues`: same tracer-bullet vertical-slice discipline, same on-disk format, **plus** a `Touches:` line per issue that predicts which files/dirs the slice will modify. capataz uses `Touches` + `Blocked by` to derive **parallel-safe waves** — which issues can be dispatched to concurrent agents without colliding — so getting `Touches` right is what makes safe parallel work possible.
 
+**Where these issues go.** Once published, the operator dispatches them from the capataz dashboard — one at a time, or a parallel-safe wave with `p` — each to a fresh `capataz-work` agent in its own git worktree; a `capataz-review` pass later files follow-up issues. So write every slice **self-contained and agent-ready** (a fresh agent with no memory of this session will implement it), and get `Touches` right — that's what lets a wave run in parallel without collisions. (Run `capataz issue` with no args for the full CLI.)
+
 ## What "good" looks like
 
 Every issue is a **tracer-bullet vertical slice**: a thin, end-to-end path through *all* the layers it needs (data → logic → wire → UI, or whatever the stack is), demoable on its own. **Not** a horizontal layer ("add all the DB tables", "build the whole UI"). If a slice can't be demoed or tested by itself, it's too horizontal — reshape it.

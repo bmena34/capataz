@@ -182,7 +182,7 @@ usage:
   capataz keybind attach [k]   bind prefix+k (default a) to attach a sidebar
   capataz keybind nav          bind Ctrl+h/j/k/l pane nav (nvim-aware)
   capataz statusline  show a "needs you" badge in tmux (off to remove)
-  capataz issue …     claim/resolve/list local .scratch issues (used by skills)
+  capataz issue …     manage the local .scratch backlog: claim/resolve/status/comment/list/new (used by skills)
   capataz config      print the config file path + contents (~/.config/capataz)
   capataz install     wire up Claude Code hooks + start the daemon
   capataz uninstall   remove hooks + stop the daemon

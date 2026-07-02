@@ -19,7 +19,7 @@ Issues live as markdown files in `.scratch/`, one feature per directory:
   - `Blocked by: NN, NN` — issue numbers in the same feature that must be `resolved` first
 - The body describes what to build and its acceptance criteria; `## Answer` and `## Comments` sections are appended at the bottom.
 
-The file is the source of truth. Change `Status:` **only** through `capataz issue …` so the dashboard and any other agents stay consistent.
+The file is the source of truth. Change `Status:` **only** through `capataz issue …` so the dashboard and any other agents stay consistent. This skill uses `capataz issue claim` / `resolve` / `status`; run `capataz issue` with no args to see the full subcommand list.
 
 ## Process
 
