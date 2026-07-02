@@ -51,33 +51,108 @@ type Feature struct {
 	Issues []Issue // sorted by Num, then filename
 }
 
+// The known issue-status vocabulary. Status is deliberately NOT a closed enum —
+// the parser stays tolerant of unknown values (see the "Issue file format"
+// gotcha in CLAUDE.md) — so these are named string constants, not a distinct
+// type. They are the single source of truth for the statuses capataz itself
+// reads or writes: the triage roles (/triage, /wayfinder), the CLI writes
+// (claim/resolve), and the display buckets/labels below.
+const (
+	StatusNeedsTriage   = "needs-triage"    // filed, awaiting triage
+	StatusNeedsInfo     = "needs-info"      // triaged: needs a human answer first
+	StatusReadyForAgent = "ready-for-agent" // triaged: an agent can pick it up
+	StatusReadyForHuman = "ready-for-human" // triaged: needs a human, not an agent
+	StatusWontfix       = "wontfix"         // terminal: decided not to do
+	StatusClaimed       = "claimed"         // an agent is working it
+	StatusResolved      = "resolved"        // terminal: implemented
+
+	// Done aliases: everyday terminal statuses treated the same as resolved.
+	StatusDone   = "done"
+	StatusClosed = "closed"
+)
+
+// The four tracker buckets Bucket collapses every status into.
+const (
+	BucketTodo    = "todo"    // open, ready to pick up
+	BucketDoing   = "doing"   // an agent has claimed it
+	BucketBlocked = "blocked" // waiting on another issue
+	BucketDone    = "done"    // terminal
+)
+
+// statusInfo is the per-status metadata carried by the vocabulary table: the
+// tracker Bucket it collapses into and a short display Label. Color is NOT here
+// on purpose — presentation (and lipgloss) lives in internal/tui so this package
+// stays dependency-light.
+type statusInfo struct {
+	Bucket string
+	Label  string
+}
+
+// statuses is the single source of truth mapping each known status to its
+// bucket and display label. Adding a status is a one-line change here; Done,
+// Bucket, and the TUI badge all read from it. Unknown statuses are absent by
+// design and fall through to the tolerant defaults (BucketTodo / uppercased
+// label) so Status can never become a closed enum.
+var statuses = map[string]statusInfo{
+	StatusReadyForAgent: {Bucket: BucketTodo, Label: "READY"},
+	StatusNeedsTriage:   {Bucket: BucketTodo, Label: "TRIAGE"},
+	StatusReadyForHuman: {Bucket: BucketTodo, Label: "HUMAN"},
+	StatusNeedsInfo:     {Bucket: BucketTodo, Label: "NEEDS-INFO"},
+	StatusClaimed:       {Bucket: BucketDoing, Label: "CLAIMED"},
+	StatusResolved:      {Bucket: BucketDone, Label: "DONE"},
+	StatusDone:          {Bucket: BucketDone, Label: "DONE"},
+	StatusClosed:        {Bucket: BucketDone, Label: "DONE"},
+	StatusWontfix:       {Bucket: BucketDone, Label: "WONTFIX"},
+}
+
+// normStatus lowercases and trims a raw status so lookups tolerate casing and
+// stray whitespace (the parser already lowercases, but the CLI and Done take
+// raw strings).
+func normStatus(status string) string {
+	return strings.ToLower(strings.TrimSpace(status))
+}
+
+// StatusInfo returns the vocabulary entry for a status and whether it is known.
+// Callers that need a label or bucket for an unknown status handle the false
+// case themselves (the TUI's fallback badge, Bucket's default). Lookup is
+// case/space-tolerant.
+func StatusInfo(status string) (bucket, label string, known bool) {
+	if info, ok := statuses[normStatus(status)]; ok {
+		return info.Bucket, info.Label, true
+	}
+	return "", "", false
+}
+
 // Done reports whether a status counts as finished for blocking purposes.
 // Covers both the triage vocabulary (wontfix) and wayfinder (resolved), plus
-// the everyday "done"/"closed".
+// the everyday "done"/"closed" — all of which map to BucketDone in the table.
 func Done(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "resolved", "done", "closed", "wontfix":
-		return true
+	if info, ok := statuses[normStatus(status)]; ok {
+		return info.Bucket == BucketDone
 	}
 	return false
 }
 
 // Bucket collapses an issue's granular status into the four categories the
-// dashboard tracker shows: "done" (terminal), "blocked" (waiting on another
-// issue), "doing" (an agent has claimed it), or "todo" (everything else that's
-// open). This is the single mapping from the open-ended Status vocabulary to
-// the tracker's fixed set.
+// dashboard tracker shows: done (terminal), blocked (waiting on another issue),
+// doing (an agent has claimed it), or todo (everything else that's open). It
+// reads the shared vocabulary table for known statuses; Blocked (a derived
+// flag, not a status) still wins over the table's non-terminal bucket, and any
+// unknown status falls through to todo — Status is not a closed enum.
 func Bucket(iss Issue) string {
-	switch {
-	case Done(iss.Status):
-		return "done"
-	case iss.Blocked:
-		return "blocked"
-	case iss.Status == "claimed":
-		return "doing"
-	default:
-		return "todo"
+	if info, ok := statuses[normStatus(iss.Status)]; ok {
+		if info.Bucket == BucketDone {
+			return BucketDone // terminal beats a stale Blocked flag
+		}
+		if iss.Blocked {
+			return BucketBlocked
+		}
+		return info.Bucket
 	}
+	if iss.Blocked {
+		return BucketBlocked
+	}
+	return BucketTodo
 }
 
 var (
@@ -409,7 +484,7 @@ func blockingEdge(a, b Issue) bool {
 func ParallelSafe(list []Issue) [][]Issue {
 	var ready []Issue
 	for _, iss := range list {
-		if Bucket(iss) == "todo" {
+		if Bucket(iss) == BucketTodo {
 			ready = append(ready, iss)
 		}
 	}

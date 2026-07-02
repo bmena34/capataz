@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bmena34/capataz/internal/issues"
 	"github.com/bmena34/capataz/internal/paths"
 )
 
@@ -52,5 +53,44 @@ func TestWorktreeDispatchPromptShape(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// TestIssueBadgePartsLabelsFromTable checks the badge label comes from the
+// shared issues vocabulary table (not an independent list) for known statuses,
+// and that an unknown status falls back to uppercasing while a known one always
+// gets a non-default color.
+func TestIssueBadgePartsLabelsFromTable(t *testing.T) {
+	for _, status := range []string{
+		issues.StatusReadyForAgent,
+		issues.StatusClaimed,
+		issues.StatusResolved,
+		issues.StatusWontfix,
+		issues.StatusNeedsInfo,
+		issues.StatusNeedsTriage,
+		issues.StatusReadyForHuman,
+	} {
+		_, wantLabel, known := issues.StatusInfo(status)
+		if !known {
+			t.Fatalf("status %q missing from vocabulary table", status)
+		}
+		gotLabel, _ := issueBadgeParts(status)
+		if gotLabel != wantLabel {
+			t.Errorf("issueBadgeParts(%q) label = %q, want %q (from table)", status, gotLabel, wantLabel)
+		}
+	}
+
+	// Empty status renders the placeholder.
+	if label, _ := issueBadgeParts(""); label != "—" {
+		t.Errorf("issueBadgeParts(\"\") label = %q, want %q", label, "—")
+	}
+
+	// Unknown status still renders via the fallback (uppercased), never panics,
+	// and is not in the table.
+	if _, _, known := issues.StatusInfo("mid-review"); known {
+		t.Fatalf("unknown status unexpectedly in table")
+	}
+	if label, _ := issueBadgeParts("mid-review"); label != "MID-REVIEW" {
+		t.Errorf("issueBadgeParts(unknown) label = %q, want %q", label, "MID-REVIEW")
 	}
 }

@@ -334,11 +334,67 @@ func TestBucket(t *testing.T) {
 		{Issue{Status: "ready-for-agent", Blocked: true}, "blocked"},
 		{Issue{Status: "resolved", Blocked: true}, "done"}, // done wins over blocked
 		{Issue{Status: "claimed", Blocked: true}, "blocked"},
+		{Issue{Status: "mid-review"}, "todo"},                   // unknown status: tolerant default
+		{Issue{Status: "mid-review", Blocked: true}, "blocked"}, // unknown + blocked still blocks
+		{Issue{Status: ""}, "todo"},                             // absent status: todo
 	}
 	for _, c := range cases {
 		if got := Bucket(c.iss); got != c.want {
 			t.Errorf("Bucket(%+v) = %q, want %q", c.iss, got, c.want)
 		}
+	}
+}
+
+// TestStatusVocabularySingleSource is the AC #4 guard: a status's bucket and
+// display label both flow from the single vocabulary table (the `statuses` map,
+// read via StatusInfo/Bucket), so adding a status is a one-place change. It also
+// pins that an unknown status stays out of the table and falls through to the
+// tolerant defaults — Status is not a closed enum.
+func TestStatusVocabularySingleSource(t *testing.T) {
+	cases := []struct {
+		status     string
+		wantBucket string
+		wantLabel  string
+	}{
+		{StatusReadyForAgent, BucketTodo, "READY"},
+		{StatusNeedsTriage, BucketTodo, "TRIAGE"},
+		{StatusReadyForHuman, BucketTodo, "HUMAN"},
+		{StatusNeedsInfo, BucketTodo, "NEEDS-INFO"},
+		{StatusClaimed, BucketDoing, "CLAIMED"},
+		{StatusResolved, BucketDone, "DONE"},
+		{StatusDone, BucketDone, "DONE"},
+		{StatusClosed, BucketDone, "DONE"},
+		{StatusWontfix, BucketDone, "WONTFIX"},
+	}
+	for _, c := range cases {
+		bucket, label, known := StatusInfo(c.status)
+		if !known {
+			t.Errorf("StatusInfo(%q): known=false, want true (must be in the table)", c.status)
+			continue
+		}
+		if label != c.wantLabel {
+			t.Errorf("StatusInfo(%q) label = %q, want %q", c.status, label, c.wantLabel)
+		}
+		if bucket != c.wantBucket {
+			t.Errorf("StatusInfo(%q) bucket = %q, want %q", c.status, bucket, c.wantBucket)
+		}
+		// The bucket a status carries in the table must match what Bucket() derives
+		// for an unblocked issue with that status — one source, no drift.
+		if got := Bucket(Issue{Status: c.status}); got != c.wantBucket {
+			t.Errorf("Bucket(status=%q) = %q, want %q (table drift)", c.status, got, c.wantBucket)
+		}
+	}
+
+	// An unknown status is absent from the table and Done treats it as open.
+	if _, _, known := StatusInfo("mid-review"); known {
+		t.Errorf("StatusInfo(unknown) known=true, want false — table must stay open")
+	}
+	if Done("mid-review") {
+		t.Errorf("Done(unknown) = true, want false")
+	}
+	// Case/space tolerance: lookups normalize before hitting the table.
+	if _, _, known := StatusInfo("  Ready-For-Agent  "); !known {
+		t.Errorf("StatusInfo is not case/space tolerant")
 	}
 }
 
@@ -377,14 +433,14 @@ func TestPathsOverlap(t *testing.T) {
 		a, b string
 		want bool
 	}{
-		{"internal/tui", "internal/tui", true},                        // equal
-		{"internal/tui", "internal/tui/issues.go", true},              // dir prefixes file
-		{"internal/tui/issues.go", "internal/tui", true},              // symmetric
-		{"internal/t", "internal/tui", false},                         // NOT a segment prefix
-		{"internal/tui", "internal/tui2", false},                      // sibling, not prefix
+		{"internal/tui", "internal/tui", true},                         // equal
+		{"internal/tui", "internal/tui/issues.go", true},               // dir prefixes file
+		{"internal/tui/issues.go", "internal/tui", true},               // symmetric
+		{"internal/t", "internal/tui", false},                          // NOT a segment prefix
+		{"internal/tui", "internal/tui2", false},                       // sibling, not prefix
 		{"internal/issues/issues.go", "internal/tui/issues.go", false}, // different dirs
-		{"internal/tui/", "internal/tui/issues.go", true},             // trailing slash normalized
-		{"./foo.go", "foo.go", true},                                  // leading ./ normalized
+		{"internal/tui/", "internal/tui/issues.go", true},              // trailing slash normalized
+		{"./foo.go", "foo.go", true},                                   // leading ./ normalized
 	}
 	for _, c := range cases {
 		if got := PathsOverlap(c.a, c.b); got != c.want {

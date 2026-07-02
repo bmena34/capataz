@@ -136,7 +136,7 @@ func (m *model) refreshReadyMerges() {
 	}
 	for _, wt := range wts {
 		iss, ok := issues.MatchBranch(wt.Branch, m.issueList)
-		if !ok || issues.Bucket(iss) != "done" {
+		if !ok || issues.Bucket(iss) != issues.BucketDone {
 			continue
 		}
 		m.readyMerges = append(m.readyMerges, mergeCandidate{Path: wt.Path, Branch: wt.Branch, Issue: iss})
@@ -188,9 +188,13 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.issueSelected[path] = true
 			}
 		}
-	case "p": // dispatch the selected set in parallel (only if mutually safe)
-		return m.dispatchParallel(false)
-	case "P": // force parallel dispatch even when the set overlaps
+	case "p": // review the selected set in a confirm modal before dispatching
+		if len(m.issueSelected) == 0 {
+			m.status = "select issues with space, then p to run them in parallel"
+			return m, nil
+		}
+		m.mode = modeParallelConfirm
+	case "P": // skip the confirm modal — dispatch the selection immediately
 		return m.dispatchParallel(true)
 	case "m": // merge back the ready dispatched worktree branches (Round 2)
 		return m.mergeReady()
@@ -489,26 +493,38 @@ func (m model) issuePrompt() string {
 // ---- rendering ----
 
 // issueBadgeParts maps a Status string to a short label and color for the badge.
+// The label comes from the shared vocabulary table (issues.StatusInfo) so labels
+// stay in one place; color lives here (internal/issues must not import lipgloss).
+// A known status picks its color by constant; the empty and unknown statuses
+// fall through to the tolerant fallback (— / uppercased, dim) so Status is never
+// a closed enum.
 func issueBadgeParts(status string) (string, lipgloss.Color) {
-	switch status {
-	case "ready-for-agent":
-		return "READY", lipgloss.Color("42") // green
-	case "claimed":
-		return "CLAIMED", lipgloss.Color("214") // amber
-	case "resolved", "done", "closed":
-		return "DONE", lipgloss.Color("240") // dim
-	case "wontfix":
-		return "WONTFIX", lipgloss.Color("240")
-	case "needs-info":
-		return "NEEDS-INFO", lipgloss.Color("208") // orange
-	case "needs-triage":
-		return "TRIAGE", lipgloss.Color("244")
-	case "ready-for-human":
-		return "HUMAN", lipgloss.Color("39") // cyan
-	case "":
+	_, label, known := issues.StatusInfo(status)
+	if known {
+		return label, statusColor(status)
+	}
+	if status == "" {
 		return "—", lipgloss.Color("244")
-	default:
-		return strings.ToUpper(status), lipgloss.Color("244")
+	}
+	return strings.ToUpper(status), lipgloss.Color("244") // unknown: dim fallback
+}
+
+// statusColor is the badge color for each known status, keyed by the shared
+// issues.Status* constants. Color is TUI-only (see issueBadgeParts).
+func statusColor(status string) lipgloss.Color {
+	switch status {
+	case issues.StatusReadyForAgent:
+		return lipgloss.Color("42") // green
+	case issues.StatusClaimed:
+		return lipgloss.Color("214") // amber
+	case issues.StatusResolved, issues.StatusDone, issues.StatusClosed, issues.StatusWontfix:
+		return lipgloss.Color("240") // dim
+	case issues.StatusNeedsInfo:
+		return lipgloss.Color("208") // orange
+	case issues.StatusReadyForHuman:
+		return lipgloss.Color("39") // cyan
+	default: // StatusNeedsTriage and any other known status without a distinct color
+		return lipgloss.Color("244")
 	}
 }
 
@@ -626,7 +642,7 @@ func (m model) featureAllDone(feature string) bool {
 			continue
 		}
 		seen = true
-		if issues.Bucket(iss) != "done" {
+		if issues.Bucket(iss) != issues.BucketDone {
 			return false
 		}
 	}
@@ -636,11 +652,11 @@ func (m model) featureAllDone(feature string) bool {
 // bucketColor is the tracker color for each status bucket (see issues.Bucket).
 func bucketColor(bucket string) lipgloss.Color {
 	switch bucket {
-	case "blocked":
+	case issues.BucketBlocked:
 		return lipgloss.Color("196") // red
-	case "doing":
+	case issues.BucketDoing:
 		return lipgloss.Color("214") // amber
-	case "done":
+	case issues.BucketDone:
 		return lipgloss.Color("240") // dim
 	default: // todo
 		return lipgloss.Color("39") // cyan
@@ -649,7 +665,12 @@ func bucketColor(bucket string) lipgloss.Color {
 
 // bucketOrder sorts the tracker so what needs attention floats to the top and
 // finished work sinks to the bottom.
-var bucketOrder = map[string]int{"blocked": 0, "todo": 1, "doing": 2, "done": 3}
+var bucketOrder = map[string]int{
+	issues.BucketBlocked: 0,
+	issues.BucketTodo:    1,
+	issues.BucketDoing:   2,
+	issues.BucketDone:    3,
+}
 
 // issuePanelBody renders the cached backlog as the concise sidebar tracker: a
 // one-line status summary, then issues sorted attention-first, each a colored
@@ -746,7 +767,7 @@ func parallelSafeAdvisory(list []issues.Issue) string {
 // Zero buckets are omitted; order is attention-first.
 func issueSummary(counts map[string]int) string {
 	var parts []string
-	for _, b := range []string{"blocked", "todo", "doing", "done"} {
+	for _, b := range []string{issues.BucketBlocked, issues.BucketTodo, issues.BucketDoing, issues.BucketDone} {
 		if n := counts[b]; n > 0 {
 			parts = append(parts, lipgloss.NewStyle().Foreground(bucketColor(b)).Render(fmt.Sprintf("%d %s", n, b)))
 		}
@@ -763,7 +784,7 @@ func issueTrackerRow(iss issues.Issue) string {
 	bucket := issues.Bucket(iss)
 	dot := lipgloss.NewStyle().Foreground(bucketColor(bucket)).Render("●")
 	title := iss.Title
-	if bucket == "done" {
+	if bucket == issues.BucketDone {
 		title = dimStyle.Render(title)
 	}
 	num := iss.Num
@@ -802,6 +823,97 @@ func (m model) startWorkPopup(base string) string {
 	px := (m.width - pw) / 2
 	py := (m.height - ph) / 2
 	box := panel("Start work", body, pw, ph, true)
+	return overlay(base, box, px, py)
+}
+
+// handleParallelConfirmKey handles the parallel-dispatch confirmation modal:
+// Enter/p/y dispatches the (now-reviewed) selection, Esc/q/n cancels back to the
+// issue list. Dispatch runs with force — the user has seen the warnings.
+func (m model) handleParallelConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "p", "y":
+		return m.dispatchParallel(true)
+	case "esc", "q", "n":
+		m.mode = modeIssues
+	}
+	return m, nil
+}
+
+// parallelWarn returns why an issue in the selected set isn't safe to dispatch
+// alongside the others (empty when it's fine): unknown scope (no Touches), a
+// blocking edge with another selected issue, or a file overlap with one.
+func parallelWarn(iss issues.Issue, sel []issues.Issue) string {
+	if len(iss.Touches) == 0 {
+		return "no Touches (unknown scope)"
+	}
+	for _, o := range sel {
+		if o.Path == iss.Path {
+			continue
+		}
+		for _, b := range iss.BlockedBy {
+			if b == o.Num {
+				return "blocked by " + o.Num
+			}
+		}
+		for _, b := range o.BlockedBy {
+			if b == iss.Num {
+				return "blocks " + o.Num
+			}
+		}
+		for _, a := range iss.Touches {
+			for _, b := range o.Touches {
+				if issues.PathsOverlap(a, b) {
+					return "overlaps " + o.Num
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// parallelConfirmPopup shows the selected set before a parallel dispatch, marking
+// which issues aren't parallel-safe and why — so p is never a silent no-op.
+func (m model) parallelConfirmPopup(base string) string {
+	sel := m.selectedIssues()
+	safe := issues.MutuallyParallelSafe(sel)
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	title := fmt.Sprintf("Dispatch %d issue(s) in parallel?", len(sel))
+	head := title
+	if !safe {
+		head = warnStyle.Render("⚠ ") + title
+	}
+	lines := []string{head, ""}
+	for _, iss := range sel {
+		num := iss.Num
+		if num == "" {
+			num = "--"
+		}
+		line := "  " + dimStyle.Render(num) + " " + truncate(iss.Title, 32)
+		if w := parallelWarn(iss, sel); w != "" {
+			line += "  " + warnStyle.Render("⚠ "+w)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "", dimStyle.Render("  Each runs in its own git worktree + session."))
+	foot := "  ↵ dispatch · Esc cancel"
+	if !safe {
+		foot = "  ↵ dispatch anyway · Esc cancel"
+	}
+	lines = append(lines, "", footerStyle.Render(foot))
+
+	body := strings.Join(lines, "\n")
+	pw := 64
+	if pw > m.width-2 {
+		pw = m.width - 2
+	}
+	ph := len(lines) + 4
+	if ph > m.height-2 {
+		ph = m.height - 2
+	}
+	px := (m.width - pw) / 2
+	py := (m.height - ph) / 2
+	box := panel("Parallel dispatch", body, pw, ph, true)
 	return overlay(base, box, px, py)
 }
 

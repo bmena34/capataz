@@ -36,13 +36,13 @@ func Run(args []string) error {
 		if len(args) < 2 {
 			return usageErr()
 		}
-		return setStatusCLI(args[1], "claimed")
+		return setStatusCLI(args[1], StatusClaimed)
 	case "resolve":
 		if len(args) < 2 {
 			return usageErr()
 		}
 		answer := flagValue(args[2:], "--answer")
-		if err := setStatusCLI(args[1], "resolved"); err != nil {
+		if err := setStatusCLI(args[1], StatusResolved); err != nil {
 			return err
 		}
 		if answer != "" {
@@ -124,7 +124,7 @@ func create(feature, title string, flags []string) error {
 	}
 	content := fmt.Sprintf(`# %s
 
-Status: ready-for-agent
+Status: %s
 Type: %s
 Blocked by: None
 
@@ -135,7 +135,7 @@ Blocked by: None
 ## Acceptance criteria
 
 - [ ]
-`, title, typ, body)
+`, title, StatusReadyForAgent, typ, body)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}

@@ -40,6 +40,7 @@ const (
 	modeRename
 	modeIssues
 	modeStartWork
+	modeParallelConfirm
 )
 
 type tickMsg time.Time
@@ -440,6 +441,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.mode == modeStartWork {
 		return m.handleStartWorkKey(msg)
+	}
+	if m.mode == modeParallelConfirm {
+		return m.handleParallelConfirmKey(msg)
 	}
 	if m.mode == modeLog {
 		key := msg.String()
@@ -991,6 +995,8 @@ func (m model) View() string {
 		return m.issuesPopup(base)
 	case modeStartWork:
 		return m.startWorkPopup(base)
+	case modeParallelConfirm:
+		return m.parallelConfirmPopup(base)
 	}
 	return base
 }

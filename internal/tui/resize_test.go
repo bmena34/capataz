@@ -69,7 +69,7 @@ func TestRenderNoPanicIssueViews(t *testing.T) {
 			if empty {
 				list = nil
 			}
-			for _, md := range []mode{modeIssues, modeStartWork} {
+			for _, md := range []mode{modeIssues, modeStartWork, modeParallelConfirm} {
 				for w := 1; w <= 80; w++ {
 					for h := 1; h <= 50; h++ {
 						func(w, h int, md mode) {
