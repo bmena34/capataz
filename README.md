@@ -111,10 +111,14 @@ Touches: internal/tui/, main.go
 
 `capataz install` ships the skills that drive this workflow:
 
+- **`capataz-start`** — the pipeline's front door: grills a fuzzy idea into a lean, splitter-ready plan (`.scratch/<feature>/plan.md`), then hands off to `capataz-splitter`. A lighter, capataz-native take on mattpocock's grill-with-docs (no ADR/glossary).
 - **`capataz-splitter`** — breaks a plan/PRD into tracer-bullet vertical slices and publishes them as issues. It explores the codebase to predict each issue's `Touches:` (the files/dirs it will modify) and draws the slices to minimize overlap. (This is capataz's replacement for mattpocock's `/to-issues`; the file format stays compatible with `/triage` and `/wayfinder`.)
 - **`capataz-work`** — when you start an issue, the agent claims it (`Status: claimed`), implements the slice, and resolves it (`Status: resolved`).
+- **`capataz-investigate`** — diagnoses a bug down to its root cause and files (or annotates) a `ready-for-agent` fix issue; it diagnoses, it does not fix — the diagnosis sibling of `capataz-review`.
+- **`capataz-triage`** — the backlog intake step: walks `needs-triage`/`needs-info` issues, grills for missing acceptance criteria and scope, then moves each to `ready-for-agent` (with a `Touches:` line) or `wontfix`. This is where `capataz-review`/`capataz-security` findings get refined into dispatchable work.
 - **`capataz-review`** — the fresh-context correctness reviewer behind `R`.
 - **`capataz-security`** — the fresh-context, OWASP-lens security reviewer behind `S`; files vulnerabilities as severity-tagged issues.
+- **`capataz-teach`** — an operator learning tool: explains a codebase area grounded in the real files (`file:line` citations), then runs a short in-terminal quiz. Lean and terminal-native — no lesson files.
 
 **Parallel dispatch.** From the `Touches:` lines, capataz derives which *ready* issues form a parallel-safe set — pairwise-disjoint files and no blocking edge between them — and shows it (`⇉ parallel-safe: 01, 02`) in the issues view. In the issue view you can `space` to **multi-select** issues and `p` to **run them in parallel**: `p` opens a confirmation that lists the selected set and flags any issue that isn't parallel-safe and *why* (no `Touches:` = unknown scope, overlaps another, or a blocking edge); `Enter` dispatches, `Esc` cancels (capital `P` skips the confirmation). Each dispatched issue gets its own git worktree (`~/.capataz/worktrees/…`) on a `capataz/<feature>-NN-slug` branch with its own session. When those issues resolve, `m` **merges** the branches back into your base one at a time; a clean merge lands and cleans up its worktree, and a conflicting one (a `Touches` misprediction) spawns a fresh **`capataz-fix-conflict`** session to resolve it. Single-issue dispatch (`Enter`) still runs in your main working tree unchanged.
 
