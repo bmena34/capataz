@@ -254,6 +254,10 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 			return m.startReview(m.issueList[m.issueCursor].Feature)
 		}
+	case "S": // OWASP-lens security review of the selected feature in a fresh session
+		if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
+			return m.startSecurity(m.issueList[m.issueCursor].Feature)
+		}
 	}
 	return m, nil
 }
@@ -262,19 +266,39 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // over the given feature — a fresh context, so it judges soundness rather than
 // trusting the implementers. Its findings return to the backlog as new issues.
 func (m model) startReview(feature string) (tea.Model, tea.Cmd) {
+	return m.startFreshReview(feature, "review",
+		fmt.Sprintf("Use the /capataz-review skill to do an in-depth, fresh-context review of the current changes and file findings as new issues under the %q feature (.scratch/%s).", feature, feature),
+		"started fresh review of "+feature)
+}
+
+// startSecurity spawns a fresh session running the capataz-security skill over
+// the given feature — an OWASP-lens security audit of the change set, a sibling
+// of startReview. Fresh context for the same reason: the implementer is the
+// context least likely to spot its own injection/authz/secret bugs. Findings
+// return to the backlog as new issues.
+func (m model) startSecurity(feature string) (tea.Model, tea.Cmd) {
+	return m.startFreshReview(feature, "security",
+		fmt.Sprintf("Use the /capataz-security skill to do a fresh-context, OWASP-focused security review of the current changes and file findings as new issues under the %q feature (.scratch/%s).", feature, feature),
+		"started fresh security review of "+feature)
+}
+
+// startFreshReview is the shared dispatch for the fresh-session review lanes
+// (correctness R / security S): spawn a new sidebar-backed session in the repo
+// running the given skill prompt, then switch to it. namePrefix labels the tmux
+// session (e.g. "review-<feature>"), status is the confirmation shown on success.
+func (m model) startFreshReview(feature, namePrefix, prompt, status string) (tea.Model, tea.Cmd) {
 	if os.Getenv("TMUX") == "" {
 		m.status = "can't spawn: capataz isn't in tmux"
 		m.mode = modeNormal
 		return m, nil
 	}
-	prompt := fmt.Sprintf("Use the /capataz-review skill to do an in-depth, fresh-context review of the current changes and file findings as new issues under the %q feature (.scratch/%s).", feature, feature)
-	pane, err := newSessionWithSidebar("review-"+feature, m.issueRepo, prompt)
+	pane, err := newSessionWithSidebar(namePrefix+"-"+feature, m.issueRepo, prompt)
 	if err != nil {
-		m.status = "review session failed: " + err.Error()
+		m.status = namePrefix + " session failed: " + err.Error()
 		m.mode = modeNormal
 		return m, nil
 	}
-	m.status = "started fresh review of " + feature
+	m.status = status
 	m.mode = modeNormal
 	if err := jump(pane); err != nil {
 		m.status = "spawned but couldn't switch: " + err.Error()
@@ -640,11 +664,11 @@ func (m model) issuesPopup(base string) string {
 		contentRows = 1
 	}
 
-	help := footerStyle.Render("↵ start work · space select · p run parallel · R review · Esc close")
+	help := footerStyle.Render("↵ start work · space select · p run parallel · R review · S security · Esc close")
 	if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 		if f := m.issueList[m.issueCursor].Feature; m.featureAllDone(f) {
 			help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ "+f+" all resolved") +
-				footerStyle.Render(" · R for a fresh review · Esc close")
+				footerStyle.Render(" · R review · S security · Esc close")
 		}
 	}
 	if adv := parallelSafeAdvisory(m.issueList); adv != "" {
@@ -663,7 +687,7 @@ func (m model) issuesPopup(base string) string {
 
 	var body string
 	if len(m.issueList) == 0 {
-		lines := padTo([]string{"", dimStyle.Render("  No .scratch backlog in this repo."), dimStyle.Render("  Create issues with /to-issues, then reopen (i).")}, contentRows)
+		lines := padTo([]string{"", dimStyle.Render("  No .scratch backlog in this repo."), dimStyle.Render("  Create issues with /capataz-splitter, then reopen (i).")}, contentRows)
 		body = strings.Join(lines, "\n") + "\n" + help
 	} else {
 		lines, cursorLine := m.issueLines()
@@ -772,7 +796,7 @@ func (m model) issuePanelBody(rows int) string {
 		rows = 1
 	}
 	if len(m.issueList) == 0 {
-		return dimStyle.Render("  No .scratch backlog. Create with /to-issues.")
+		return dimStyle.Render("  No .scratch backlog. Create with /capataz-splitter.")
 	}
 
 	counts := map[string]int{}

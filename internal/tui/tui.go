@@ -378,8 +378,29 @@ func (m *model) resort() {
 				return
 			}
 		}
+	} else if idx := m.attachedIndex(); idx >= 0 {
+		// Fresh startup with nothing selected yet: open the dashboard on the
+		// session the user's client is attached to rather than the top of the
+		// list, so switching to the sidebar/popup lands on the current session.
+		m.cursor = idx
 	}
 	m.clampCursor()
+}
+
+// attachedIndex returns the index of the session the user's tmux client is
+// currently attached to, or -1 if none of the tracked sessions match (e.g. the
+// client is on an unmanaged window). Uses the same pane→session mapping as the
+// attached ▸ marker so the seeded cursor lands on the marked row.
+func (m *model) attachedIndex() int {
+	if m.attachedSession == "" {
+		return -1
+	}
+	for i, s := range m.sessions {
+		if m.paneSession[s.TmuxPane] == m.attachedSession {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *model) clampCursor() {

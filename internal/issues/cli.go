@@ -161,8 +161,8 @@ func create(feature, title string, flags []string) error {
 		return err
 	}
 	// Serialize number allocation so two concurrent `issue new` calls (e.g. a
-	// review session filing findings while /to-issues runs) can't grab the same
-	// number and produce duplicate-numbered files.
+	// review session filing findings while capataz-splitter runs) can't grab the
+	// same number and produce duplicate-numbered files.
 	unlock := lockFeature(dir)
 	defer unlock()
 
