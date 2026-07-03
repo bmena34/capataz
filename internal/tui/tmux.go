@@ -210,6 +210,15 @@ func newClaudeSession(name, dir, prompt string) (string, error) {
 	}
 	args = append(args, "claude")
 	if prompt != "" {
+		// A prompt means this is a dispatched session (the drain orchestrator, a
+		// review, a fix-conflict) booting straight into automated work — not the
+		// interactive session opened by hand (that passes an empty prompt). Give
+		// it a hands-off permission posture so it doesn't freeze on Claude Code's
+		// interactive permission prompt with nobody there to approve. Subagents it
+		// spawns inherit this, so the whole drain is covered.
+		if conf().Dispatch.SkipPermissions {
+			args = append(args, "--dangerously-skip-permissions")
+		}
 		args = append(args, prompt) // claude's positional opening prompt
 	}
 	out, err := exec.Command("tmux", args...).Output()

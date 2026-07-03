@@ -14,10 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/bmena34/capataz/internal/install"
 	"github.com/bmena34/capataz/internal/issues"
-	"github.com/bmena34/capataz/internal/logging"
-	"github.com/bmena34/capataz/internal/paths"
 	"github.com/bmena34/capataz/internal/worktree"
 )
 
@@ -233,14 +230,14 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.issueSelected[path] = true
 			}
 		}
-	case "p": // review the selected set in a confirm modal before dispatching
+	case "p": // review the selected set in a confirm modal before draining
 		if len(m.issueSelected) == 0 {
-			m.status = "select issues with space, then p to run them in parallel"
+			m.status = "select issues with space, then p to drain them hands-off"
 			return m, nil
 		}
 		m.mode = modeParallelConfirm
-	case "P": // skip the confirm modal — dispatch the selection immediately
-		return m.dispatchParallel(true)
+	case "P": // skip the confirm modal — start the drain immediately
+		return m.dispatchParallel()
 	case "m": // merge back the ready dispatched worktree branches (Round 2)
 		return m.mergeReady()
 	case "x": // prune orphaned dispatch worktrees (crashed/aborted, nothing live)
@@ -354,66 +351,60 @@ func dispatchableSet(sel []issues.Issue) (dispatchable []issues.Issue, skipped [
 // Touches, no blocking edge, known scope); an unsafe set is refused with a hint
 // to press capital P to override. Per-issue worktree failures are reported but
 // don't abort the rest of the batch.
-func (m model) dispatchParallel(force bool) (tea.Model, tea.Cmd) {
+func (m model) dispatchParallel() (tea.Model, tea.Cmd) {
 	all := m.selectedIssues()
 	if len(all) == 0 {
-		m.status = "select issues with space, then p to run them in parallel"
+		m.status = "select issues with space, then p to drain them hands-off"
 		return m, nil
 	}
 	if os.Getenv("TMUX") == "" {
 		m.status = "can't spawn: capataz isn't in tmux"
+		m.mode = modeNormal
 		return m, nil
 	}
 	sel, skipped := dispatchableSet(all)
 	if len(sel) == 0 {
 		m.issueSelected = nil
 		m.mode = modeNormal
-		m.status = "nothing to dispatch: all selected are resolved/blocked/claimed (" + strings.Join(skipped, ", ") + ")"
-		return m, nil
-	}
-	if !force && !issues.MutuallyParallelSafe(sel) {
-		m.status = "selected set overlaps — press P to dispatch anyway"
+		m.status = "nothing to drain: all selected are resolved/blocked/claimed (" + strings.Join(skipped, ", ") + ")"
 		return m, nil
 	}
 
-	dispatched := 0
+	// One hands-off orchestrator, not one session per issue: it runs the
+	// /capataz-drain skill, which claims each ready issue, works it via a
+	// capataz-work subagent in its own worktree, merges the branch back, and
+	// re-scans until the feature's backlog is drained. The selection seeds the
+	// drain and names the feature; overlaps sequence into separate waves inside
+	// the loop, so there's no parallel-safety gate to pass here anymore.
+	feature := sel[0].Feature
+	nums := make([]string, 0, len(sel))
 	for _, iss := range sel {
 		num := iss.Num
 		if num == "" {
 			num = "--"
 		}
-		leaf := iss.Feature + "-" + num + "-" + iss.Slug
-		branch := issues.DispatchBranch(iss)
-		dir := filepath.Join(paths.WorktreesDir(), repoWorktreeID(m.issueRepo), leaf)
-
-		if err := worktree.Add(m.issueRepo, dir, branch); err != nil {
-			m.status = "worktree for " + num + " failed: " + err.Error()
-			continue // don't abort the batch — dispatch the rest
-		}
-		// Pre-trust the fresh worktree dir so the spawned claude doesn't stall on
-		// the folder-trust prompt before it can run the dispatch prompt. Best
-		// effort — on failure the session still spawns (it'd just show the prompt).
-		if err := install.TrustDir(dir); err != nil {
-			logging.Infof("pre-trust worktree %s: %v", dir, err)
-		}
-		name := iss.Feature + "-" + num
-		if _, err := newSessionWithSidebar(name, dir, worktreeDispatchPrompt(iss.Path, branch)); err != nil {
-			m.status = "session for " + num + " failed: " + err.Error()
-			continue
-		}
-		dispatched++
+		nums = append(nums, num)
 	}
 
-	m.issueSelected = nil // clear the selection after a dispatch
+	pane, err := newSessionWithSidebar("drain-"+feature, m.issueRepo, drainPrompt(feature, nums, conf().Parallel.MaxConcurrency))
+	if err != nil {
+		m.status = "drain session failed: " + err.Error()
+		m.mode = modeNormal
+		return m, nil
+	}
+
+	m.issueSelected = nil // clear the selection after kicking off the drain
 	m.mode = modeNormal
-	if dispatched > 0 {
-		m.status = fmt.Sprintf("dispatched %d parallel session(s)", dispatched)
-		if len(skipped) > 0 {
-			m.status += fmt.Sprintf(", skipped %d not dispatchable (%s)", len(skipped), strings.Join(skipped, ", "))
-		}
-		if m.popup {
-			return m, tea.Quit
-		}
+	m.status = fmt.Sprintf("draining %s (%s)", feature, strings.Join(nums, ", "))
+	if len(skipped) > 0 {
+		m.status += fmt.Sprintf(", skipped %d not dispatchable (%s)", len(skipped), strings.Join(skipped, ", "))
+	}
+	if err := jump(pane); err != nil {
+		m.status = "drain started but couldn't switch: " + err.Error()
+		return m, nil
+	}
+	if m.popup {
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -500,6 +491,14 @@ func (m model) resolveConflict(c mergeCandidate, merged int) (tea.Model, tea.Cmd
 // on the branch without merging — capataz merges back later (Round 2).
 func worktreeDispatchPrompt(absIssuePath, branch string) string {
 	return fmt.Sprintf("Use the /capataz-work skill to work on the issue at %s. You are in an isolated git worktree on branch %s; commit your work on this branch when you resolve (git add -A && git commit) and do not merge — capataz merges it back later.", absIssuePath, branch)
+}
+
+// drainPrompt is the opening prompt for the single orchestrator session a
+// parallel dispatch spawns: it runs the /capataz-drain skill hands-off over a
+// feature's backlog, seeded with the selected issue numbers, and lets the skill
+// own the worktree/subagent/merge loop until the feature is drained.
+func drainPrompt(feature string, nums []string, maxConcurrency int) string {
+	return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain the %q feature's .scratch backlog, merging into this repo's current branch (the base). Start with these ready issues: %s. Then keep draining any sibling issues in the same feature that become ready as their blockers resolve, until none are left. Work each issue in its own git worktree via a capataz-work subagent, merge clean branches back, spawn a capataz-fix-conflict subagent on any conflict, and do not stop for confirmation. Run at most %d capataz-work subagents at once (max concurrency).", feature, strings.Join(nums, ", "), maxConcurrency)
 }
 
 // repoWorktreeID builds a single filesystem-safe path segment that disambiguates
@@ -947,7 +946,7 @@ func (m model) startWorkPopup(base string) string {
 func (m model) handleParallelConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", "p", "y":
-		return m.dispatchParallel(true)
+		return m.dispatchParallel()
 	case "esc", "q", "n":
 		m.mode = modeIssues
 	}
@@ -998,10 +997,10 @@ func (m model) parallelConfirmPopup(base string) string {
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	skipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
-	head := fmt.Sprintf("Dispatch %d of %d selected issue(s)?", len(dispatchable), len(sel))
+	head := fmt.Sprintf("Start a hands-off drain of %d of %d selected issue(s)?", len(dispatchable), len(sel))
 	if len(dispatchable) == 0 {
-		head = warnStyle.Render("⚠ ") + "None dispatchable — nothing to run"
-	} else if !safe || len(skipped) > 0 {
+		head = warnStyle.Render("⚠ ") + "None dispatchable — nothing to drain"
+	} else if len(skipped) > 0 {
 		head = warnStyle.Render("⚠ ") + head
 	}
 	lines := []string{head, ""}
@@ -1019,16 +1018,17 @@ func (m model) parallelConfirmPopup(base string) string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", dimStyle.Render("  Each dispatchable issue runs in its own git worktree + session."))
+	lines = append(lines, "", dimStyle.Render("  One orchestrator drains these (and their unblocked siblings) hands-off,"))
+	lines = append(lines, dimStyle.Render("  each via a capataz-work subagent in its own worktree."))
+	if !safe {
+		lines = append(lines, dimStyle.Render("  Overlapping issues just run in separate waves — not a problem here."))
+	}
 	if len(skipped) > 0 && len(dispatchable) > 0 {
 		lines = append(lines, skipStyle.Render(fmt.Sprintf("  %d not dispatchable will be skipped.", len(skipped))))
 	}
-	foot := "  ↵ dispatch · Esc cancel"
-	switch {
-	case len(dispatchable) == 0:
-		foot = "  Esc cancel (nothing to dispatch)"
-	case !safe:
-		foot = "  ↵ dispatch anyway · Esc cancel"
+	foot := "  ↵ drain · Esc cancel"
+	if len(dispatchable) == 0 {
+		foot = "  Esc cancel (nothing to drain)"
 	}
 	lines = append(lines, "", footerStyle.Render(foot))
 
@@ -1043,7 +1043,7 @@ func (m model) parallelConfirmPopup(base string) string {
 	}
 	px := (m.width - pw) / 2
 	py := (m.height - ph) / 2
-	box := panel("Parallel dispatch", body, pw, ph, true)
+	box := panel("Hands-off drain", body, pw, ph, true)
 	return overlay(base, box, px, py)
 }
 

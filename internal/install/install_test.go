@@ -1,82 +1,11 @@
 package install
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"testing/fstest"
 )
-
-// TestTrustDir verifies pre-seeding folder trust preserves the rest of
-// ~/.claude.json (other projects and top-level keys) and backs it up.
-func TestTrustDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	cfg := filepath.Join(home, ".claude.json")
-	orig := `{"numStartups":7,"projects":{"/some/other":{"hasTrustDialogAccepted":true,"lastCost":1.5}}}`
-	if err := os.WriteFile(cfg, []byte(orig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	wt := filepath.Join(home, "wt", "feature-01-x")
-	if err := TrustDir(wt); err != nil {
-		t.Fatal(err)
-	}
-
-	var root map[string]any
-	data, _ := os.ReadFile(cfg)
-	if err := json.Unmarshal(data, &root); err != nil {
-		t.Fatalf("result not valid JSON: %v", err)
-	}
-	if root["numStartups"] != float64(7) {
-		t.Errorf("top-level key clobbered: %v", root["numStartups"])
-	}
-	projects := root["projects"].(map[string]any)
-	other := projects["/some/other"].(map[string]any)
-	if other["hasTrustDialogAccepted"] != true || other["lastCost"] != 1.5 {
-		t.Errorf("other project clobbered: %v", other)
-	}
-	if got := projects[wt].(map[string]any); got["hasTrustDialogAccepted"] != true {
-		t.Errorf("worktree not trusted: %v", got)
-	}
-	if _, err := os.Stat(cfg + ".capataz.bak"); err != nil {
-		t.Errorf("no backup written: %v", err)
-	}
-}
-
-func TestTrustDirCreatesMissingConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	wt := filepath.Join(home, "wt")
-	if err := TrustDir(wt); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
-	if err != nil {
-		t.Fatalf("config not created: %v", err)
-	}
-	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
-		t.Fatal(err)
-	}
-	got := root["projects"].(map[string]any)[wt].(map[string]any)
-	if got["hasTrustDialogAccepted"] != true {
-		t.Errorf("worktree not trusted: %v", got)
-	}
-}
-
-func TestTrustDirIdempotent(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	wt := filepath.Join(home, "wt")
-	if err := TrustDir(wt); err != nil {
-		t.Fatal(err)
-	}
-	if err := TrustDir(wt); err != nil { // already trusted → no-op
-		t.Fatal(err)
-	}
-}
 
 // TestInstallSkillSwapReplaces verifies a successful install fully replaces a
 // prior version (no stale files merged in) and leaves no temp dir behind.
