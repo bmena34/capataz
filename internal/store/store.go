@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	state_since     INTEGER,
 	cost_usd        REAL,
 	git_branch      TEXT,
-	git_dirty       INTEGER
+	git_dirty       INTEGER,
+	name            TEXT
 );
 `
 
@@ -62,6 +63,7 @@ var migrations = []string{
 	"ALTER TABLE sessions ADD COLUMN cost_usd REAL",
 	"ALTER TABLE sessions ADD COLUMN git_branch TEXT",
 	"ALTER TABLE sessions ADD COLUMN git_dirty INTEGER",
+	"ALTER TABLE sessions ADD COLUMN name TEXT",
 }
 
 // Open opens (and migrates) the database for read/write. Used by the daemon.
@@ -133,30 +135,91 @@ func (s *Store) History(sessionID string, limit int) ([]Record, error) {
 func (s *Store) SaveSession(x proto.Session) error {
 	_, err := s.db.Exec(
 		`INSERT INTO sessions
-		   (session_id, cwd, tmux_pane, transcript_path, state, last_event, last_change, started, summary, context_tokens, out_tokens, model, state_since, cost_usd, git_branch, git_dirty)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   (session_id, cwd, tmux_pane, transcript_path, state, last_event, last_change, started, summary, context_tokens, out_tokens, model, state_since, cost_usd, git_branch, git_dirty, name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(session_id) DO UPDATE SET
 		   cwd=excluded.cwd, tmux_pane=excluded.tmux_pane, transcript_path=excluded.transcript_path,
 		   state=excluded.state, last_event=excluded.last_event, last_change=excluded.last_change,
 		   started=excluded.started, summary=excluded.summary, context_tokens=excluded.context_tokens,
 		   out_tokens=excluded.out_tokens, model=excluded.model, state_since=excluded.state_since,
-		   cost_usd=excluded.cost_usd, git_branch=excluded.git_branch, git_dirty=excluded.git_dirty`,
+		   cost_usd=excluded.cost_usd, git_branch=excluded.git_branch, git_dirty=excluded.git_dirty, name=excluded.name`,
 		x.ID, x.Cwd, x.TmuxPane, x.TranscriptPath, string(x.State), x.LastEvent, x.LastChange,
-		x.Started, x.Summary, x.ContextTokens, x.OutTokens, x.Model, x.StateSince, x.CostUSD, x.GitBranch, x.GitDirty,
+		x.Started, x.Summary, x.ContextTokens, x.OutTokens, x.Model, x.StateSince, x.CostUSD, x.GitBranch, x.GitDirty, x.Name,
 	)
 	return err
 }
 
-// DeleteSession removes a session (on SessionEnd).
+// DeleteSession removes a session (on explicit dismiss).
 func (s *Store) DeleteSession(id string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, id)
 	return err
 }
 
+// TrimEnded keeps only the most-recent keep sessions in the 'ended' state (by
+// last_change) and deletes the rest, so retained/resumable rows don't grow
+// without bound. keep <= 0 is treated as "retain none" only if you pass a
+// negative value; a keep of 0 deletes all ended rows. Non-ended rows are never
+// touched. It returns the session ids it deleted so the caller can evict the
+// same rows from any in-memory mirror of the sessions table (see the daemon's
+// hub.sessions map) and keep the two in lockstep.
+func (s *Store) TrimEnded(keep int) ([]string, error) {
+	if keep < 0 {
+		return nil, nil
+	}
+	// Identify the over-cap ended rows first so we can report them back; the
+	// same predicate then drives the delete. RETURNING isn't relied on (older
+	// sqlite builds lack it), so we select-then-delete under WAL.
+	rows, err := s.db.Query(
+		`SELECT session_id FROM sessions
+		 WHERE state = 'ended'
+		   AND session_id NOT IN (
+		     SELECT session_id FROM sessions
+		     WHERE state = 'ended'
+		     ORDER BY last_change DESC
+		     LIMIT ?
+		   )`,
+		keep,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var deleted []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		deleted = append(deleted, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(deleted) == 0 {
+		return nil, nil
+	}
+	if _, err := s.db.Exec(
+		`DELETE FROM sessions
+		 WHERE state = 'ended'
+		   AND session_id NOT IN (
+		     SELECT session_id FROM sessions
+		     WHERE state = 'ended'
+		     ORDER BY last_change DESC
+		     LIMIT ?
+		   )`,
+		keep,
+	); err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
 // LoadSessions returns all persisted sessions (for repopulating on startup).
 func (s *Store) LoadSessions() ([]proto.Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, cwd, tmux_pane, transcript_path, state, last_event, last_change, started, summary, context_tokens, out_tokens, model, state_since, cost_usd, git_branch, git_dirty
+		`SELECT session_id, cwd, tmux_pane, transcript_path, state, last_event, last_change, started, summary, context_tokens, out_tokens, model, state_since, cost_usd, git_branch, git_dirty, name
 		 FROM sessions`,
 	)
 	if err != nil {
@@ -167,12 +230,14 @@ func (s *Store) LoadSessions() ([]proto.Session, error) {
 	for rows.Next() {
 		var x proto.Session
 		var st string
+		var name sql.NullString // NULL on rows written before the name column existed
 		if err := rows.Scan(&x.ID, &x.Cwd, &x.TmuxPane, &x.TranscriptPath, &st, &x.LastEvent,
 			&x.LastChange, &x.Started, &x.Summary, &x.ContextTokens, &x.OutTokens, &x.Model,
-			&x.StateSince, &x.CostUSD, &x.GitBranch, &x.GitDirty); err != nil {
+			&x.StateSince, &x.CostUSD, &x.GitBranch, &x.GitDirty, &name); err != nil {
 			return nil, err
 		}
 		x.State = proto.State(st)
+		x.Name = name.String
 		out = append(out, x)
 	}
 	return out, rows.Err()

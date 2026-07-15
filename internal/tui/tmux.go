@@ -230,6 +230,71 @@ func newClaudeSession(name, dir, prompt string) (string, error) {
 	return pane, nil
 }
 
+// resumeClaudeSession creates a new detached tmux session that resumes an
+// existing Claude conversation via `claude --resume <sessionID>`, and returns
+// the new pane's id. It mirrors newClaudeSession but, instead of a positional
+// opening prompt, appends `--resume <sessionID>` so Claude re-attaches to the
+// same conversation (and — crucially — the SAME session_id, since we do NOT
+// pass --fork-session). That preserved id is what lets the revived session's
+// SessionStart hook find and repopulate the existing ended row rather than
+// spawning a duplicate.
+//
+// No --dangerously-skip-permissions: a resume is an interactive action the
+// operator just triggered from the dashboard, so the normal permission prompts
+// are appropriate (unlike the hands-off dispatch path in newClaudeSession).
+// name is the retained session's label (the tmux session name); dir is the
+// retained cwd, used for -c so the resumed session lands back in its repo.
+func resumeClaudeSession(name, dir, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("no session id to resume")
+	}
+	name = sanitizeName(name)
+	if name == "" {
+		name = sessionBase(dir)
+	}
+	name = uniqueSessionName(name)
+	args := []string{"new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}", "-n", "claude"}
+	// Create at the client's real size so attachSidebar's split is right (see
+	// newClaudeSession for why the detached default would scale to ~50/50).
+	if w, h := clientSize(); w > 0 && h > 0 {
+		args = append(args, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+	}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	// --resume <id> (no --fork-session) reuses the original session id.
+	args = append(args, "claude", "--resume", sessionID)
+	out, err := exec.Command("tmux", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("new-session: %v", err)
+	}
+	pane := strings.TrimSpace(string(out))
+	logging.Infof("resume session %q pane=%s dir=%s id=%s", name, pane, dir, shortID(sessionID))
+	return pane, nil
+}
+
+// resumeSessionWithSidebar resumes a Claude conversation and attaches a
+// dashboard sidebar to it, analogous to newSessionWithSidebar. A sidebar
+// failure is non-fatal — the resumed session is still usable.
+func resumeSessionWithSidebar(name, dir, sessionID string) (string, error) {
+	pane, err := resumeClaudeSession(name, dir, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if err := attachSidebar(pane); err != nil {
+		logging.Errorf("attach sidebar to resumed session: %v", err)
+	}
+	return pane, nil
+}
+
+// shortID trims a session id for readable logs.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
 // attachSidebar splits a narrow capataz dashboard pane to the left of
 // targetPane. The dashboard runs as a normal (non-popup) pane, so selecting a
 // session switches without closing the sidebar. The -d flag keeps focus on the

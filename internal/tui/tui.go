@@ -326,12 +326,12 @@ func (m *model) applyPush(p proto.Push) {
 	case "snapshot":
 		m.sessions = m.sessions[:0]
 		for _, s := range p.Sessions {
-			if s.TmuxPane != "" { // defensive: ignore any detached strays
+			if trackable(s) {
 				m.sessions = append(m.sessions, s)
 			}
 		}
 	case "update":
-		if p.Session != nil && p.Session.TmuxPane != "" {
+		if p.Session != nil && trackable(*p.Session) {
 			m.upsert(*p.Session)
 		}
 	case "remove":
@@ -340,6 +340,14 @@ func (m *model) applyPush(p proto.Push) {
 		}
 	}
 	m.resort()
+}
+
+// trackable reports whether a session should appear in the dashboard. A live
+// session has a tmux pane; an ended session always has an empty pane but is
+// retained as a resumable row. Everything else with an empty pane is a
+// detached stray and is dropped defensively.
+func trackable(s proto.Session) bool {
+	return s.TmuxPane != "" || s.State == proto.StateEnded
 }
 
 func (m *model) upsert(s proto.Session) {
@@ -418,10 +426,16 @@ func (m *model) clampCursor() {
 }
 
 // label is the dashboard's name for a session: its (renameable) tmux session
-// name when known, falling back to the working-directory basename.
+// name when known. For a live pane that's the current tmux name; for an ended
+// (empty-pane) row the pane lookup misses, so we fall back to the name the
+// daemon persisted while the pane was live (so a resumed session keeps its
+// former label), and only then to the working-directory basename.
 func (m model) label(s proto.Session) string {
 	if name := m.paneSession[s.TmuxPane]; name != "" {
 		return name
+	}
+	if s.Name != "" {
+		return s.Name
 	}
 	return short(s.Cwd)
 }
@@ -431,6 +445,20 @@ func (m *model) current() (proto.Session, bool) {
 		return m.sessions[m.cursor], true
 	}
 	return proto.Session{}, false
+}
+
+// focused is the session the persistent sidebar's detail + issues panels lock
+// onto: the one the user's tmux client is attached to (the ▸-marked row), so
+// moving the cursor with j/k previews a row without repointing those panels.
+// In the popup (transient hover-preview) or when the client isn't on any
+// managed session, it falls back to current() — the cursor.
+func (m *model) focused() (proto.Session, bool) {
+	if !m.popup {
+		if idx := m.attachedIndex(); idx >= 0 {
+			return m.sessions[idx], true
+		}
+	}
+	return m.current()
 }
 
 // anotherSession returns some other managed (paned) session, preferring the
@@ -448,6 +476,10 @@ func (m *model) anotherSession(excludeID string) (proto.Session, bool) {
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeHelp {
 		m.mode = modeNormal // any key closes the help
+		return m, nil
+	}
+	if m.mode == modePeek {
+		m.mode = modeNormal // any key closes the details peek
 		return m, nil
 	}
 	if m.mode == modeReply {
@@ -520,6 +552,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "?":
 		m.mode = modeHelp
+	case "d": // peek at the hovered session's detail without switching to it
+		if _, ok := m.current(); ok {
+			m.mode = modePeek
+		} else {
+			m.status = "no session selected"
+		}
 	case "up", "k":
 		m.cursor--
 		m.clampCursor()
@@ -537,9 +575,22 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G": // bottom
 		m.cursor = len(m.sessions) - 1
 		m.clampCursor()
-	case "enter", "o": // switch the client to the session
+	case "enter", "o": // switch to the session — or resume it if it ended
 		if s, ok := m.current(); ok {
-			if err := jump(s.TmuxPane); err != nil {
+			if s.State == proto.StateEnded {
+				// The row is a retained, resumable session: relaunch it with
+				// `claude --resume <id>`. Its SessionStart fires with the same
+				// session_id and a new pane, so the daemon repopulates this very
+				// row and it goes live automatically — no duplicate.
+				if _, err := resumeSessionWithSidebar(m.label(s), s.Cwd, s.ID); err != nil {
+					m.status = "resume failed: " + err.Error()
+				} else {
+					m.status = "resuming " + m.label(s) + "…"
+					if m.popup {
+						return m, tea.Quit // close the popup; the session is coming back
+					}
+				}
+			} else if err := jump(s.TmuxPane); err != nil {
 				m.status = "open failed: " + err.Error()
 			} else if m.popup {
 				return m, tea.Quit // close the popup; client is now on that session
@@ -583,13 +634,27 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "no session selected"
-	case "x": // gracefully quit a session (asks to confirm first)
-		if s, ok := m.current(); ok && s.TmuxPane != "" {
-			m.killID = s.ID
-			m.mode = modeKill
-			m.layoutModal()
+	case "x": // ended row → dismiss from the resume list; live row → graceful quit
+		if s, ok := m.current(); ok {
+			if s.State == proto.StateEnded {
+				// Retained (resumable) row: drop it from the resume list. The daemon
+				// deletes it from the store and broadcasts a "remove" so every
+				// dashboard forgets the row. (TrimEnded would eventually reclaim it,
+				// but dismiss lets the operator clear one now.)
+				if err := dismissSession(s.ID); err != nil {
+					m.status = "dismiss failed: " + err.Error()
+				} else {
+					m.status = "dismissed " + m.label(s)
+				}
+			} else if s.TmuxPane != "" {
+				m.killID = s.ID
+				m.mode = modeKill
+				m.layoutModal()
+			} else {
+				m.status = "no tmux pane for this session"
+			}
 		} else {
-			m.status = "no tmux pane for this session"
+			m.status = "no session selected"
 		}
 	case "R": // rename the selected session's tmux session
 		if s, ok := m.current(); ok && s.TmuxPane != "" {
@@ -972,6 +1037,9 @@ var (
 	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Bold(true)
 	okDot         = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("●")
 	badDot        = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("●")
+	// resumableStyle dims the "(resumable)" hint on ended rows — present but quiet,
+	// signalling Enter revives the row without shouting for attention.
+	resumableStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true)
 )
 
 func badge(s proto.State) string {
@@ -1016,6 +1084,8 @@ func (m model) View() string {
 		return m.newPopup(base)
 	case modeHelp:
 		return m.helpPopup(base)
+	case modePeek:
+		return m.peekPopup(base)
 	case modeKill:
 		return m.killPopup(base)
 	case modeRename:
@@ -1071,6 +1141,34 @@ func (m model) killPopup(base string) string {
 	return overlay(base, box, px, py)
 }
 
+// peekPopup shows the hovered (cursor) session's detail in a centered overlay
+// without switching to it — the sidebar's detail panel is locked to the attached
+// session, so this is how you glance at another row. Any key closes it.
+func (m model) peekPopup(base string) string {
+	sel, ok := m.current()
+	title := "Detail"
+	pw := 58
+	if pw > m.width-2 {
+		pw = m.width - 2
+	}
+	var body string
+	if !ok {
+		body = dimStyle.Render("No session selected.")
+	} else {
+		title = "Detail · " + m.label(sel)
+		body = m.detailBodyFor(sel, pw-2, 0)
+	}
+	body += "\n" + footerStyle.Render("Esc close")
+	ph := strings.Count(body, "\n") + 3
+	if ph > m.height-2 {
+		ph = m.height - 2
+	}
+	px := (m.width - pw) / 2
+	py := (m.height - ph) / 2
+	box := panel(title, body, pw, ph, true)
+	return overlay(base, box, px, py)
+}
+
 func (m model) selTitle() string {
 	if s, ok := m.current(); ok {
 		return m.label(s)
@@ -1118,7 +1216,11 @@ func (m model) dashboardView() string {
 		panel(fmt.Sprintf("Active (%d)", len(active)), m.listBody(active, w-2, false), w, activeH, m.cursorIn(active)),
 	}
 	if showExtra {
-		detailBody := m.detailBody(w-2, 0)
+		focused, hasFocused := m.focused()
+		detailBody := dimStyle.Render("No session selected.")
+		if hasFocused {
+			detailBody = m.detailBodyFor(focused, w-2, 0)
+		}
 		// The inline Issues tracker is a sidebar-only glance; the popup is the
 		// switch-and-work surface (press i there), so it keeps Detail full-height.
 		showIssues := !m.popup
@@ -1134,8 +1236,8 @@ func (m model) dashboardView() string {
 			}
 		}
 		title := "Detail"
-		if s, ok := m.current(); ok {
-			title = "Detail · " + m.label(s)
+		if hasFocused {
+			title = "Detail · " + m.label(focused)
 		}
 		panels = append(panels, panel(title, detailBody, w, detailH, false))
 
@@ -1153,17 +1255,20 @@ func (m model) dashboardView() string {
 	return stack + "\n" + strings.Join(kb, "\n")
 }
 
-// detailBody renders the selected session's context-window usage and a glance at
+// detailBodyFor renders a given session's context-window usage and a glance at
 // what it last said — all from the session struct (no transcript parsing here).
-func (m model) detailBody(innerW, rows int) string {
-	sel, ok := m.current()
-	if !ok {
-		return dimStyle.Render("No session selected.")
-	}
+// The sidebar passes m.focused() (the attached session); the peek popup passes
+// m.current() (the hovered row).
+func (m model) detailBodyFor(sel proto.Session, innerW, rows int) string {
 	div := dimStyle.Render(strings.Repeat("─", max(innerW, 1)))
 	var b strings.Builder
 
-	b.WriteString(badge(sel.State) + dimStyle.Render("  "+orDash(sel.TmuxPane)+" · "+age(sel.LastChange)) + "\n")
+	head := badge(sel.State) + dimStyle.Render("  "+orDash(sel.TmuxPane)+" · "+age(sel.LastChange))
+	if sel.State == proto.StateEnded {
+		// Make it clear the row isn't dead weight: Enter brings it back.
+		head += resumableStyle.Render("  (resumable · ↵)")
+	}
+	b.WriteString(head + "\n")
 	b.WriteString(dimStyle.Render(truncate(sel.Cwd, innerW)) + "\n")
 	if sel.Subagents > 0 {
 		plur := ""
@@ -1269,6 +1374,11 @@ func (m model) listBody(group []proto.Session, innerW int, needsPanel bool) stri
 			lbl = fmt.Sprintf("%s ⊂%d", lbl, s.Subagents) // running Task subagents
 		}
 		base := fmt.Sprintf("%s%s %-12s %4s ", mark, badge(s.State), truncate(lbl, 12), age(s.LastChange))
+		if s.State == proto.StateEnded {
+			// A retained row: cue that Enter brings it back. Kept short so it fits
+			// the narrow sidebar and doesn't disturb column alignment.
+			base += resumableStyle.Render("(resumable)")
+		}
 		cw := innerW - 6 // leave 5 for ctx + 1 for the prefix
 		if cw < 1 {
 			cw = 1
@@ -1439,6 +1549,7 @@ func (m model) helpPopup(base string) string {
 		"  R                   rename the selected tmux session",
 		"  r                   quick reply without leaving the dashboard",
 		"  c                   conversation — threaded history",
+		"  d                   peek at the hovered session's detail",
 		"  l                   event log",
 		"  i                   issues — browse this repo's .scratch backlog",
 		"                      (in issues: ↵ work · space select · p parallel · R review)",

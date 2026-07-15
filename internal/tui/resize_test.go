@@ -24,17 +24,31 @@ func TestRenderNoPanic(t *testing.T) {
 		{Feature: "billing", Num: "01", Title: "Stripe webhook handler", Status: "resolved"},
 		{Feature: "billing", Num: "03", Title: "Store schema", Status: "ready-for-agent", Touches: []string{"internal/store/db.go"}},
 	}
-	for w := 1; w <= 80; w++ {
-		for h := 1; h <= 50; h++ {
-			func(w, h int) {
-				defer func() {
-					if r := recover(); r != nil {
-						t.Fatalf("panic at w=%d h=%d: %v", w, h, r)
-					}
-				}()
-				m.width, m.height = w, h
-				_ = m.View()
-			}(w, h)
+	// Cover the normal dashboard plus the details-peek popup (a distinct render
+	// path). Peek also renders a "No session selected" fallback, so exercise an
+	// empty session list under modePeek too.
+	for _, md := range []mode{modeNormal, modePeek} {
+		for _, empty := range []bool{false, true} {
+			sessions := m.sessions
+			if empty {
+				sessions = nil
+			}
+			for w := 1; w <= 80; w++ {
+				for h := 1; h <= 50; h++ {
+					func(w, h int, md mode, sessions []proto.Session) {
+						defer func() {
+							if r := recover(); r != nil {
+								t.Fatalf("panic mode=%d empty=%v w=%d h=%d: %v", md, empty, w, h, r)
+							}
+						}()
+						m.sessions = sessions
+						m.mode = md
+						m.width, m.height = w, h
+						m.clampCursor()
+						_ = m.View()
+					}(w, h, md, sessions)
+				}
+			}
 		}
 	}
 }

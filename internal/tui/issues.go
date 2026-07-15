@@ -38,7 +38,15 @@ import (
 // work against) the shared backlog in the primary. That resolution shells out
 // to git, so it runs only when the cwd actually changes — never per tick.
 func (m *model) syncSelectedIssues(force bool) {
-	sel, ok := m.current()
+	// In the persistent sidebar the issues panel tracks the attached session
+	// (focused), matching the locked detail panel, so moving the cursor previews
+	// a row without repointing the backlog. The full issue view opened with `i`
+	// (modeIssues) is cursor-driven, so key off current() while it's open. In the
+	// popup, focused() == current().
+	sel, ok := m.focused()
+	if m.mode == modeIssues {
+		sel, ok = m.current()
+	}
 	if !ok {
 		m.issueCwd, m.issueRepo, m.issueRepoName, m.issueList = "", "", "", nil
 		m.issueMod = time.Time{}
@@ -68,11 +76,13 @@ func (m *model) syncSelectedIssues(force bool) {
 	m.loadIssues()
 }
 
-// openIssues opens the interactive issue view for the selected session's repo.
+// openIssues opens the interactive issue view for the selected (cursor) session's
+// repo. Sets modeIssues first so the sync keys off current() — the modal is
+// cursor-driven even though the sidebar panel tracks the attached session.
 func (m *model) openIssues() {
+	m.mode = modeIssues
 	m.syncSelectedIssues(true)
 	m.issueCursor = 0
-	m.mode = modeIssues
 }
 
 // loadIssues scans issueRepo into issueList, keeping the cursor on the same
