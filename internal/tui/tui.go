@@ -136,6 +136,11 @@ type model struct {
 	// modelPickerCursor is the picker's selected row.
 	modelOverride     string
 	modelPickerCursor int
+	// prevMode is the mode to return to when closing modeHelp. It is set by
+	// any code that opens modeHelp so that closing the shortcuts popup lands
+	// back in the right view (modeNormal for the main dashboard, modeIssues
+	// when ? is pressed from the issues view).
+	prevMode mode
 }
 
 // modelChoices is the fixed alias set the M picker offers, in display order.
@@ -542,7 +547,10 @@ func (m *model) attachedManagedPane() (string, bool) {
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeHelp {
-		m.mode = modeNormal // any key closes the help
+		// Return to where we came from: modeIssues when ? was pressed there,
+		// modeNormal for the main dashboard.
+		m.mode = m.prevMode
+		m.prevMode = modeNormal
 		return m, nil
 	}
 	if m.mode == modePeek {
@@ -621,6 +629,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit // esc dismisses the transient popup like a menu
 		}
 	case "?":
+		m.prevMode = modeNormal
 		m.mode = modeHelp
 	case "d": // peek at the hovered session's detail without switching to it
 		if _, ok := m.current(); ok {
@@ -1509,7 +1518,7 @@ func (m model) keybarLines() []string {
 		width = 12
 	}
 
-	hint := keybarStyle.Render("↵ switch · n new · i issues · x kill · ? keys")
+	hint := keybarStyle.Render("? shortcuts")
 	hintW := ansi.StringWidth(hint)
 	dotW := ansi.StringWidth(dot)
 	// Left: one leading space + hint. Right: dot + one trailing space.
