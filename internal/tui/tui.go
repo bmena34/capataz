@@ -136,6 +136,11 @@ type model struct {
 	// modelPickerCursor is the picker's selected row.
 	modelOverride     string
 	modelPickerCursor int
+	// prevMode is the mode to return to when closing modeHelp. It is set by
+	// any code that opens modeHelp so that closing the shortcuts popup lands
+	// back in the right view (modeNormal for the main dashboard, modeIssues
+	// when ? is pressed from the issues view).
+	prevMode mode
 }
 
 // modelChoices is the fixed alias set the M picker offers, in display order.
@@ -542,7 +547,10 @@ func (m *model) attachedManagedPane() (string, bool) {
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeHelp {
-		m.mode = modeNormal // any key closes the help
+		// Return to where we came from: modeIssues when ? was pressed there,
+		// modeNormal for the main dashboard.
+		m.mode = m.prevMode
+		m.prevMode = modeNormal
 		return m, nil
 	}
 	if m.mode == modePeek {
@@ -621,6 +629,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit // esc dismisses the transient popup like a menu
 		}
 	case "?":
+		m.prevMode = modeNormal
 		m.mode = modeHelp
 	case "d": // peek at the hovered session's detail without switching to it
 		if _, ok := m.current(); ok {
@@ -1420,7 +1429,6 @@ func usageLine(label string, pct int, reset time.Time) string {
 	return line + "\n"
 }
 
-
 // split partitions the sorted session list into the three dashboard groups:
 // needs (live sessions waiting on you), active (live sessions working), and
 // resumable (retained ended sessions — dead panes we keep so you can bring them
@@ -1509,7 +1517,7 @@ func (m model) keybarLines() []string {
 		width = 12
 	}
 
-	hint := keybarStyle.Render("↵ switch · n new · i issues · x kill · ? keys")
+	hint := keybarStyle.Render("? help")
 	hintW := ansi.StringWidth(hint)
 	dotW := ansi.StringWidth(dot)
 	// Left: one leading space + hint. Right: dot + one trailing space.
@@ -1641,31 +1649,51 @@ func tailLines(s string, n int) string {
 
 func (m model) helpPopup(base string) string {
 	hdr := func(s string) string { return accentStyle.Bold(true).Render(s) }
+	// row keeps a tight key column + a terse description so the whole line fits
+	// the sidebar width most people run capataz at (~40 cols) without truncating.
+	// Keys hold multi-byte runes (↵ ↑ ↓), so pad by display width, not byte len.
+	row := func(key, desc string) string {
+		pad := 9 - ansi.StringWidth(key)
+		if pad < 1 {
+			pad = 1
+		}
+		return "  " + key + strings.Repeat(" ", pad) + footerStyle.Render(desc)
+	}
 	lines := []string{
 		hdr("Navigation"),
-		"  j / k   ↑ / ↓       move selection",
-		"  gg / G              jump to top / bottom",
-		"  Ctrl+d / Ctrl+u     half-page down / up",
+		row("j/k ↑/↓", "move"),
+		row("gg / G", "top / bottom"),
+		row("^d / ^u", "half-page"),
 		"",
 		hdr("Sessions"),
-		"  Enter / o           switch to the session (full screen)",
-		"  n                   new claude session (dir, then name)",
-		"  R                   rename the selected tmux session",
-		"  r                   quick reply without leaving the dashboard",
-		"  c                   conversation — threaded history",
-		"  d                   peek at the hovered session's detail",
-		"  l                   event log",
-		"  i                   issues — browse this repo's .scratch backlog",
-		"                      (in issues: ↵ work · space select · p parallel · R review)",
-		"  x                   quit a session (graceful, with confirm)",
+		row("↵ / o", "switch to it"),
+		row("n", "new session"),
+		row("r", "quick reply"),
+		row("c", "conversation"),
+		row("d", "peek detail"),
+		row("l", "event log"),
+		row("R", "rename"),
+		row("x", "quit / dismiss"),
+		"",
+		hdr("Issues (i)"),
+		row("↵ / o", "start work"),
+		row("space", "select"),
+		row("p / P", "drain feature"),
+		row("w", "work selected"),
+		row("R", "review"),
+		row("S", "security"),
+		row("M", "model"),
+		row("m", "merge ready"),
+		row("x", "prune orphans"),
+		row("?", "shortcuts"),
 		"",
 		hdr("Other"),
-		"  ?                   toggle this help",
-		"  q / Esc             close (Esc dismisses the popup)",
+		row("?", "toggle help"),
+		row("q / Esc", "close"),
 	}
 	body := strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("  ? or Esc to close")
 
-	pw := 62
+	pw := 44
 	if pw > m.width-2 {
 		pw = m.width - 2
 	}
