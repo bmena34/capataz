@@ -268,6 +268,9 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.mode = modeModelPicker
+	case "?": // open the shortcuts popup; closing it returns to the issues view
+		m.prevMode = modeIssues
+		m.mode = modeHelp
 	case "x": // prune orphaned dispatch worktrees (crashed/aborted, nothing live)
 		return m.pruneOrphans()
 	case "enter", "o":
@@ -854,7 +857,9 @@ func (m model) issuesPopup(base string) string {
 		contentRows = 1
 	}
 
-	help := footerStyle.Render("↵ start work · space select · p drain · w work · R review · S security · M model · Esc close")
+	// The static key list is replaced by a short pointer to the ? shortcuts
+	// popup (non-truncating). Dynamic status indicators are kept and prepended.
+	help := footerStyle.Render("? shortcuts")
 	if m.modelOverride != "" {
 		help = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("model→"+m.modelOverride) +
 			footerStyle.Render(" · ") + help
@@ -862,7 +867,7 @@ func (m model) issuesPopup(base string) string {
 	if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 		if f := m.issueList[m.issueCursor].Feature; m.featureAllDone(f) {
 			help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ "+f+" all resolved") +
-				footerStyle.Render(" · R review · S security · Esc close")
+				footerStyle.Render(" · ") + help
 		}
 	}
 	if adv := parallelSafeAdvisory(m.issueList); adv != "" {
