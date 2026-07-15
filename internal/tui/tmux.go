@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -168,8 +169,113 @@ func killWindow(window string) error {
 	return nil
 }
 
+// tmuxSessionHasLiveClaude reports whether the tmux session named `name` has a
+// running (non-dead) claude pane in any of its windows. Dismiss uses it to avoid
+// killing a session that tmux has reused for a live agent — freed session names
+// can be reused, so a stale resumable row could point at a name a new agent now
+// holds. The `=` prefix forces an exact name match so "redis" can't fuzzy-match
+// "redis-2".
+func tmuxSessionHasLiveClaude(name string) bool {
+	if name == "" {
+		return false
+	}
+	out, err := exec.Command("tmux", "list-panes", "-s", "-t", "="+name,
+		"-F", "#{pane_current_command}\t#{pane_dead}").Output()
+	if err != nil {
+		return false // session gone (or error) → nothing live to protect
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.SplitN(line, "\t", 2)
+		if len(f) == 2 && f[0] == "claude" && f[1] == "0" {
+			return true
+		}
+	}
+	return false
+}
+
+// killSession tears down an entire tmux session (all its windows and panes) by
+// exact name. Best-effort — a session that is already gone is not a real error.
+func killSession(name string) error {
+	if name == "" {
+		return fmt.Errorf("no session name")
+	}
+	if out, err := exec.Command("tmux", "kill-session", "-t", "="+name).CombinedOutput(); err != nil {
+		return fmt.Errorf("kill-session: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // inTmux reports whether capataz is running inside a tmux pane.
 func inTmux() bool { return os.Getenv("TMUX") != "" && os.Getenv("TMUX_PANE") != "" }
+
+// bootstrapOutsideTmux runs when `capataz` is launched from a plain terminal
+// (not inside tmux). The dashboard needs tmux to switch panes and spawn agent
+// sessions, so rather than render a half-working dashboard we get the operator
+// INTO tmux: attach to a running tmux server if one exists, otherwise ask for a
+// directory + session name, spawn a first claude session (with a sidebar), and
+// attach to it. Either way the returned process hands the terminal to tmux until
+// the operator detaches.
+func bootstrapOutsideTmux() error {
+	if tmuxHasSessions() {
+		return attachTmux("") // most-recently-used session
+	}
+	dir, name := promptDirAndName()
+	pane, err := newSessionWithSidebar(name, dir, "", "")
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	session, _, err := paneOrigin(pane)
+	if err != nil {
+		return fmt.Errorf("locate new session: %w", err)
+	}
+	return attachTmux(session)
+}
+
+// tmuxHasSessions reports whether a tmux server is running with at least one
+// session. A missing server (no sessions) makes list-sessions error out.
+func tmuxHasSessions() bool {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// attachTmux hands this terminal over to tmux, attaching to the named session
+// (or the most-recently-used one when session is empty). It inherits stdio so
+// tmux takes over the tty; it returns when the operator detaches.
+func attachTmux(session string) error {
+	args := []string{"attach-session"}
+	if session != "" {
+		args = append(args, "-t", "="+session)
+	}
+	cmd := exec.Command("tmux", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// promptDirAndName asks the operator (on stdin) for the directory and session
+// name of the first session to create when no tmux server is running yet. A
+// blank directory means home; a blank name defaults to the directory basename.
+func promptDirAndName() (dir, name string) {
+	r := bufio.NewReader(os.Stdin)
+	fmt.Println("No tmux session found — let's start one.")
+	fmt.Print("Directory for the new session (blank = home): ")
+	line, _ := r.ReadString('\n')
+	dir = strings.TrimSpace(line)
+	if dir == "" {
+		dir, _ = os.UserHomeDir()
+	} else {
+		dir = expandHome(dir)
+	}
+	fmt.Printf("Session name (blank = %s): ", sessionBase(dir))
+	line, _ = r.ReadString('\n')
+	name = strings.TrimSpace(line)
+	if name == "" {
+		name = sessionBase(dir)
+	}
+	return dir, name
+}
 
 // paneOrigin returns the tmux session name and window id containing a pane.
 func paneOrigin(pane string) (session, windowID string, err error) {
@@ -192,7 +298,13 @@ func paneOrigin(pane string) (session, windowID string, err error) {
 // its own named session whose layout travels with it. When prompt is non-empty
 // it's passed to claude as its opening prompt (`claude "<prompt>"`), so the
 // agent boots straight into the work — no send-keys timing to fight.
-func newClaudeSession(name, dir, prompt string) (string, error) {
+//
+// model, when non-empty, is passed as `claude --model <alias>` so a dispatched
+// session runs on the role's chosen model (see config.Models). Empty means
+// inherit — pass no --model. It's threaded only on this fresh-session fallback;
+// the hand-to-current dispatch path carries the model in the prompt instead
+// (that session already exists and can't be re-modeled from outside).
+func newClaudeSession(name, dir, prompt, model string) (string, error) {
 	name = sanitizeName(name)
 	if name == "" {
 		name = sessionBase(dir)
@@ -209,6 +321,12 @@ func newClaudeSession(name, dir, prompt string) (string, error) {
 		args = append(args, "-c", dir)
 	}
 	args = append(args, "claude")
+	if model != "" {
+		// Route this dispatched session onto the role's model. Only set on a
+		// non-empty prompt path in practice (interactive sessions pass ""), but
+		// guard independently so an interactive session is never re-modeled.
+		args = append(args, "--model", model)
+	}
 	if prompt != "" {
 		// A prompt means this is a dispatched session (the drain orchestrator, a
 		// review, a fix-conflict) booting straight into automated work — not the
@@ -318,9 +436,10 @@ func attachSidebar(targetPane string) error {
 
 // newSessionWithSidebar creates a new claude session and attaches a dashboard
 // sidebar to it. A sidebar failure is non-fatal — the session is still usable.
-// prompt, when non-empty, is claude's opening prompt (see newClaudeSession).
-func newSessionWithSidebar(name, dir, prompt string) (string, error) {
-	pane, err := newClaudeSession(name, dir, prompt)
+// prompt, when non-empty, is claude's opening prompt (see newClaudeSession);
+// model, when non-empty, is the --model alias to run it on.
+func newSessionWithSidebar(name, dir, prompt, model string) (string, error) {
+	pane, err := newClaudeSession(name, dir, prompt, model)
 	if err != nil {
 		return "", err
 	}

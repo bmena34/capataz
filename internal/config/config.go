@@ -18,6 +18,7 @@ type Config struct {
 	Parallel Parallel `json:"parallel"`
 	Context  Context  `json:"context"`
 	Resume   Resume   `json:"resume"`
+	Models   Models   `json:"models"`
 }
 
 // Resume controls retention of ended sessions so they survive a tmux/machine
@@ -26,6 +27,56 @@ type Resume struct {
 	// MaxRetained caps how many ended sessions the daemon keeps persisted (the
 	// most-recent by last_change). Older ended rows are trimmed. Default 20.
 	MaxRetained int `json:"max_retained"`
+}
+
+// Models routes a model alias to each dispatched agent role, so heavier reasoning
+// goes where it earns its cost (reviews/security/conflicts on opus) and routine
+// implementation stays cheap (sonnet). The recognized aliases are the fixed set
+// opus/sonnet/fable/haiku/default; "default" (or empty, or any unrecognized value)
+// means "don't pass a model" — the dispatched claude/subagent inherits its own
+// default. Parsing is deliberately tolerant: an unknown alias is treated as
+// inherit rather than rejected, so a typo degrades gracefully instead of crashing.
+//
+// The recognized roles are:
+//
+//   - implementer  — the capataz-work implementer (single-issue dispatch, drain
+//     subagents). Default sonnet.
+//   - reviewer     — the fresh-context correctness review (R). Default opus.
+//   - security     — the fresh-context OWASP security review (S). Default opus.
+//   - conflict     — the capataz-fix-conflict resolver. Default opus.
+//   - orchestrator — the session that hands work to subagents (single-issue
+//     orchestration + drain). Default "default" (inherit).
+type Models struct {
+	Implementer  string `json:"implementer"`
+	Reviewer     string `json:"reviewer"`
+	Security     string `json:"security"`
+	Conflict     string `json:"conflict"`
+	Orchestrator string `json:"orchestrator"`
+}
+
+// Aliases is the fixed set of recognized model aliases. "default" means inherit
+// (pass no --model / no per-subagent model).
+var modelAliases = map[string]bool{
+	"opus":    true,
+	"sonnet":  true,
+	"fable":   true,
+	"haiku":   true,
+	"default": true,
+}
+
+// Resolve normalizes an alias to a value safe to thread into a dispatch: a
+// recognized alias other than "default" is returned as-is; "default", empty, or
+// any unrecognized value collapses to "" (inherit — pass no model). Tolerant by
+// design so a typo in config.json degrades to inherit rather than breaking a
+// dispatch.
+func (Models) Resolve(alias string) string {
+	if alias == "" || alias == "default" {
+		return ""
+	}
+	if modelAliases[alias] {
+		return alias
+	}
+	return "" // unknown alias: inherit rather than pass a bad --model
 }
 
 // Context tunes the context-window gauge. The transcript records only the bare
@@ -104,6 +155,13 @@ func Default() Config {
 		Dispatch: Dispatch{SkipPermissions: true},
 		Parallel: Parallel{MaxConcurrency: 3},
 		Resume:   Resume{MaxRetained: 20},
+		Models: Models{
+			Implementer:  "sonnet",
+			Reviewer:     "opus",
+			Security:     "opus",
+			Conflict:     "opus",
+			Orchestrator: "default", // inherit
+		},
 	}
 }
 
@@ -132,6 +190,26 @@ func Load() Config {
 	}
 	if c.Resume.MaxRetained <= 0 {
 		c.Resume.MaxRetained = d.Resume.MaxRetained
+	}
+	// A partial "models" block (some roles set, others omitted) unmarshals the
+	// absent roles to "", which would silently drop their default. Re-seed each
+	// empty role from the defaults so an unspecified role keeps its built-in
+	// model. A role explicitly set to "default" stays "default" (inherit) — only
+	// the empty (absent) case falls back here.
+	if c.Models.Implementer == "" {
+		c.Models.Implementer = d.Models.Implementer
+	}
+	if c.Models.Reviewer == "" {
+		c.Models.Reviewer = d.Models.Reviewer
+	}
+	if c.Models.Security == "" {
+		c.Models.Security = d.Models.Security
+	}
+	if c.Models.Conflict == "" {
+		c.Models.Conflict = d.Models.Conflict
+	}
+	if c.Models.Orchestrator == "" {
+		c.Models.Orchestrator = d.Models.Orchestrator
 	}
 	return c
 }

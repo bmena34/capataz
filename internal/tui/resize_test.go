@@ -12,6 +12,8 @@ func TestRenderNoPanic(t *testing.T) {
 	m.sessions = []proto.Session{
 		{ID: "a", TmuxPane: "%1", State: proto.StateWaiting, Cwd: "/Users/x/proj", ContextTokens: 500000, OutTokens: 400, Model: "claude-opus-4-8", Subagents: 2},
 		{ID: "b", TmuxPane: "%2", State: proto.StateWorking, Cwd: "/Users/x/other"},
+		// A retained ended session drives the new Resumable panel render path.
+		{ID: "c", TmuxPane: "", State: proto.StateEnded, Cwd: "/Users/x/proj", Name: "proj"},
 	}
 	m.limits = proto.Usage{OK: true, SessionPct: 61, WeeklyPct: 8}
 	// A cached backlog so the inline sidebar Issues panel is exercised too.
@@ -76,6 +78,9 @@ func TestRenderNoPanicIssueViews(t *testing.T) {
 	m.readyMerges = []mergeCandidate{
 		{Path: "/wt/billing-01", Branch: "capataz/billing-01-stripe", Issue: m.issueList[2]},
 	}
+	// A pending model override so the issues-popup footer override chip and the
+	// M picker both render across all sizes.
+	m.modelOverride = "opus"
 	// cursor 2 = the resolved "billing" issue, exercising the all-resolved footer.
 	for _, cursor := range []int{0, 2} {
 		for _, empty := range []bool{false, true} {
@@ -83,7 +88,7 @@ func TestRenderNoPanicIssueViews(t *testing.T) {
 			if empty {
 				list = nil
 			}
-			for _, md := range []mode{modeIssues, modeStartWork, modeParallelConfirm} {
+			for _, md := range []mode{modeIssues, modeStartWork, modeParallelConfirm, modeModelPicker} {
 				for w := 1; w <= 80; w++ {
 					for h := 1; h <= 50; h++ {
 						func(w, h int, md mode) {

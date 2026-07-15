@@ -42,6 +42,7 @@ const (
 	modeIssues
 	modeStartWork
 	modeParallelConfirm
+	modeModelPicker
 )
 
 type tickMsg time.Time
@@ -128,10 +129,57 @@ type model struct {
 	// (issues.ScratchModTime, no file reads) and skips the full scan when nothing
 	// changed, so idle browsing doesn't re-parse the whole backlog 60×/minute.
 	issueMod time.Time
+	// modelOverride is a one-shot model alias chosen from the M picker
+	// (modeModelPicker). When non-empty it overrides the per-role config default
+	// (config.Models) for the NEXT dispatch only — the work/drain keys and R/S —
+	// then is cleared by consumeModel. Empty means "use each role's default".
+	// modelPickerCursor is the picker's selected row.
+	modelOverride     string
+	modelPickerCursor int
+}
+
+// modelChoices is the fixed alias set the M picker offers, in display order.
+// "default" means inherit (pass no model / no per-subagent model).
+var modelChoices = []string{"opus", "sonnet", "fable", "haiku", "default"}
+
+// modelFor returns the model alias to thread into a dispatch for a role whose
+// config default is roleDefault: the one-shot M override when set, else the
+// role default. The returned value is still an alias (opus/sonnet/.../default);
+// callers pass it through config.Models.Resolve to collapse default/unknown to
+// "" (inherit). This does NOT clear the override — call consumeModel for that.
+func (m model) modelFor(roleDefault string) string {
+	if m.modelOverride != "" {
+		return m.modelOverride
+	}
+	return roleDefault
+}
+
+// resolvedModelFor is modelFor collapsed to a --model value: "" means inherit
+// (pass no model), otherwise a concrete alias. Tolerant of unknown overrides
+// (they collapse to inherit) via config.Models.Resolve.
+func (m model) resolvedModelFor(roleDefault string) string {
+	return conf().Models.Resolve(m.modelFor(roleDefault))
+}
+
+// consumeModel clears the one-shot override after a dispatch has read it, so the
+// next dispatch falls back to role defaults. Returns the updated model for the
+// caller to thread through its (tea.Model, tea.Cmd) return.
+func (m model) consumeModel() model {
+	m.modelOverride = ""
+	return m
 }
 
 // Run starts the dashboard. It blocks until the user quits.
 func Run() error {
+	// Launched from a plain terminal (not inside tmux): the dashboard can't switch
+	// panes or spawn sessions there, so bootstrap the operator into tmux instead —
+	// attach to an existing server, or create+attach a first session. Gate on
+	// $TMUX (not inTmux()) so a popup — which has $TMUX set but no $TMUX_PANE —
+	// still renders normally; the sidebar pane and `watch`/`tui` have $TMUX too.
+	if os.Getenv("TMUX") == "" {
+		return bootstrapOutsideTmux()
+	}
+
 	ti := textinput.New()
 	ti.Placeholder = "type your reply, Enter to send, Esc to cancel"
 	ti.Prompt = "" // we render our own "› " prompt
@@ -473,6 +521,25 @@ func (m *model) anotherSession(excludeID string) (proto.Session, bool) {
 	return proto.Session{}, false
 }
 
+// attachedManagedPane returns the live tmux pane of the managed session the
+// user's client is attached to, or ok == false when the client isn't on any
+// managed session (or that session has no live pane). Dispatch hands the
+// orchestration prompt to this pane so the work shows as a ⊂N subagent count on
+// that row and inherits the session's already-trusted posture — no fresh
+// bypass-permissions claude process. When ok is false, callers fall back to
+// spawning a fresh sidebar-backed session.
+func (m *model) attachedManagedPane() (string, bool) {
+	idx := m.attachedIndex()
+	if idx < 0 {
+		return "", false
+	}
+	pane := m.sessions[idx].TmuxPane
+	if pane == "" {
+		return "", false
+	}
+	return pane, true
+}
+
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeHelp {
 		m.mode = modeNormal // any key closes the help
@@ -505,6 +572,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.mode == modeParallelConfirm {
 		return m.handleParallelConfirmKey(msg)
+	}
+	if m.mode == modeModelPicker {
+		return m.handleModelPickerKey(msg)
 	}
 	if m.mode == modeLog {
 		key := msg.String()
@@ -582,12 +652,19 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// `claude --resume <id>`. Its SessionStart fires with the same
 				// session_id and a new pane, so the daemon repopulates this very
 				// row and it goes live automatically — no duplicate.
-				if _, err := resumeSessionWithSidebar(m.label(s), s.Cwd, s.ID); err != nil {
+				pane, err := resumeSessionWithSidebar(m.label(s), s.Cwd, s.ID)
+				if err != nil {
 					m.status = "resume failed: " + err.Error()
 				} else {
 					m.status = "resuming " + m.label(s) + "…"
+					// Switch the client onto the freshly spawned pane, same as
+					// every other spawn path — otherwise claude --resume launches
+					// in the background and the operator is left where they were.
+					if jerr := jump(pane); jerr != nil {
+						m.status = "resumed but switch failed: " + jerr.Error()
+					}
 					if m.popup {
-						return m, tea.Quit // close the popup; the session is coming back
+						return m, tea.Quit // close the popup; client is now on the session
 					}
 				}
 			} else if err := jump(s.TmuxPane); err != nil {
@@ -637,9 +714,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x": // ended row → dismiss from the resume list; live row → graceful quit
 		if s, ok := m.current(); ok {
 			if s.State == proto.StateEnded {
-				// Retained (resumable) row: drop it from the resume list. The daemon
-				// deletes it from the store and broadcasts a "remove" so every
-				// dashboard forgets the row. (TrimEnded would eventually reclaim it,
+				// Retained (resumable) row: tear down the leftover tmux session AND
+				// drop the row. When claude exits, its sibling capataz sidebar pane
+				// keeps the tmux session alive as a zombie; dismissing is the operator
+				// saying "done with this", so kill the whole session (sidebar included),
+				// not just forget the row. Guarded by a live-claude check so a stale
+				// row can never reap a session tmux has reused for a running agent.
+				if s.Name != "" && !tmuxSessionHasLiveClaude(s.Name) {
+					_ = killSession(s.Name)
+				}
+				// The daemon deletes the row from the store and broadcasts a "remove"
+				// so every dashboard forgets it. (TrimEnded would eventually reclaim it,
 				// but dismiss lets the operator clear one now.)
 				if err := dismissSession(s.ID); err != nil {
 					m.status = "dismiss failed: " + err.Error()
@@ -822,7 +907,7 @@ func (m model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "can't spawn: capataz isn't in tmux"
 			return m, nil
 		}
-		pane, err := newSessionWithSidebar(name, m.newDir, "")
+		pane, err := newSessionWithSidebar(name, m.newDir, "", "")
 		if err != nil {
 			m.status = "new session failed: " + err.Error()
 			return m, nil
@@ -1096,6 +1181,8 @@ func (m model) View() string {
 		return m.startWorkPopup(base)
 	case modeParallelConfirm:
 		return m.parallelConfirmPopup(base)
+	case modeModelPicker:
+		return m.modelPickerPopup(base)
 	}
 	return base
 }
@@ -1186,7 +1273,7 @@ func (m model) dashboardView() string {
 		bodyH = 6
 	}
 
-	needs, active := m.split()
+	needs, active, resumable := m.split()
 
 	needsH := len(needs) + 2
 	if needsH < 3 {
@@ -1196,16 +1283,22 @@ func (m model) dashboardView() string {
 	if activeH < 3 {
 		activeH = 3
 	}
+	// The Resumable panel only appears when there's retained history to show, so
+	// a fresh dashboard with no dead sessions stays uncluttered.
+	resumableH := 0
+	if len(resumable) > 0 {
+		resumableH = len(resumable) + 2
+	}
 
-	// The Needs You + Active lists always get their full height (sessions are
-	// never hidden). The leftover splits between Detail (sized to its content)
-	// and an Issues panel that fills whatever remains — so the backlog lives in
-	// the sidebar's spare space instead of behind a keypress.
-	leftover := bodyH - needsH - activeH
+	// The Needs You + Active (+ Resumable) lists always get their full height
+	// (sessions are never hidden). The leftover splits between Detail (sized to
+	// its content) and an Issues panel that fills whatever remains — so the
+	// backlog lives in the sidebar's spare space instead of behind a keypress.
+	leftover := bodyH - needsH - activeH - resumableH
 	showExtra := leftover >= 6
 	if !showExtra {
 		leftover = 0
-		activeH = bodyH - needsH
+		activeH = bodyH - needsH - resumableH
 		if activeH < 3 {
 			activeH = 3
 		}
@@ -1214,6 +1307,9 @@ func (m model) dashboardView() string {
 	panels := []string{
 		panel(fmt.Sprintf("Needs You (%d)", len(needs)), m.listBody(needs, w-2, true), w, needsH, m.cursorIn(needs)),
 		panel(fmt.Sprintf("Active (%d)", len(active)), m.listBody(active, w-2, false), w, activeH, m.cursorIn(active)),
+	}
+	if resumableH > 0 {
+		panels = append(panels, panel(fmt.Sprintf("Resumable (%d)", len(resumable)), m.listBody(resumable, w-2, false), w, resumableH, m.cursorIn(resumable)))
 	}
 	if showExtra {
 		focused, hasFocused := m.focused()
@@ -1325,11 +1421,19 @@ func usageLine(label string, pct int, reset time.Time) string {
 }
 
 
-func (m model) split() (needs, active []proto.Session) {
+// split partitions the sorted session list into the three dashboard groups:
+// needs (live sessions waiting on you), active (live sessions working), and
+// resumable (retained ended sessions — dead panes we keep so you can bring them
+// back with `claude --resume`). An ended session is NOT "active", so it gets its
+// own group instead of inflating the Active count with dead rows.
+func (m model) split() (needs, active, resumable []proto.Session) {
 	for _, s := range m.sessions {
-		if s.State.NeedsYou() {
+		switch {
+		case s.State == proto.StateEnded:
+			resumable = append(resumable, s)
+		case s.State.NeedsYou():
 			needs = append(needs, s)
-		} else {
+		default:
 			active = append(active, s)
 		}
 	}
