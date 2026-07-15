@@ -78,6 +78,9 @@ func TestRenderNoPanicIssueViews(t *testing.T) {
 	m.readyMerges = []mergeCandidate{
 		{Path: "/wt/billing-01", Branch: "capataz/billing-01-stripe", Issue: m.issueList[2]},
 	}
+	// A pending model override so the issues-popup footer override chip and the
+	// M picker both render across all sizes.
+	m.modelOverride = "opus"
 	// cursor 2 = the resolved "billing" issue, exercising the all-resolved footer.
 	for _, cursor := range []int{0, 2} {
 		for _, empty := range []bool{false, true} {
@@ -85,7 +88,7 @@ func TestRenderNoPanicIssueViews(t *testing.T) {
 			if empty {
 				list = nil
 			}
-			for _, md := range []mode{modeIssues, modeStartWork, modeParallelConfirm} {
+			for _, md := range []mode{modeIssues, modeStartWork, modeParallelConfirm, modeModelPicker} {
 				for w := 1; w <= 80; w++ {
 					for h := 1; h <= 50; h++ {
 						func(w, h int, md mode) {

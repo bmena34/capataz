@@ -256,6 +256,18 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.dispatchBounded()
 	case "m": // merge back the ready dispatched worktree branches (Round 2)
 		return m.mergeReady()
+	case "M": // open the model-override picker (one-shot, next dispatch only)
+		m.modelPickerCursor = 0
+		// Preselect the current override if one is pending, so reopening shows it.
+		if m.modelOverride != "" {
+			for i, a := range modelChoices {
+				if a == m.modelOverride {
+					m.modelPickerCursor = i
+					break
+				}
+			}
+		}
+		m.mode = modeModelPicker
 	case "x": // prune orphaned dispatch worktrees (crashed/aborted, nothing live)
 		return m.pruneOrphans()
 	case "enter", "o":
@@ -279,7 +291,7 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // over the given feature — a fresh context, so it judges soundness rather than
 // trusting the implementers. Its findings return to the backlog as new issues.
 func (m model) startReview(feature string) (tea.Model, tea.Cmd) {
-	return m.startFreshReview(feature, "review",
+	return m.startFreshReview(feature, "review", conf().Models.Reviewer,
 		fmt.Sprintf("Use the /capataz-review skill to do an in-depth, fresh-context review of the current changes and file findings as new issues under the %q feature (.scratch/%s).", feature, feature),
 		"started fresh review of "+feature)
 }
@@ -290,7 +302,7 @@ func (m model) startReview(feature string) (tea.Model, tea.Cmd) {
 // context least likely to spot its own injection/authz/secret bugs. Findings
 // return to the backlog as new issues.
 func (m model) startSecurity(feature string) (tea.Model, tea.Cmd) {
-	return m.startFreshReview(feature, "security",
+	return m.startFreshReview(feature, "security", conf().Models.Security,
 		fmt.Sprintf("Use the /capataz-security skill to do a fresh-context, OWASP-focused security review of the current changes and file findings as new issues under the %q feature (.scratch/%s).", feature, feature),
 		"started fresh security review of "+feature)
 }
@@ -299,13 +311,20 @@ func (m model) startSecurity(feature string) (tea.Model, tea.Cmd) {
 // (correctness R / security S): spawn a new sidebar-backed session in the repo
 // running the given skill prompt, then switch to it. namePrefix labels the tmux
 // session (e.g. "review-<feature>"), status is the confirmation shown on success.
-func (m model) startFreshReview(feature, namePrefix, prompt, status string) (tea.Model, tea.Cmd) {
+// roleDefault is the role's config-default model alias (reviewer/security); the
+// resolved model (honoring a one-shot M override) is threaded onto the fresh
+// session and the override is consumed. Reviews ALWAYS spawn fresh sessions (the
+// unbiased-review guarantee) — the model is the only thing routed here, never a
+// hand-to-current.
+func (m model) startFreshReview(feature, namePrefix, roleDefault, prompt, status string) (tea.Model, tea.Cmd) {
 	if os.Getenv("TMUX") == "" {
 		m.status = "can't spawn: capataz isn't in tmux"
 		m.mode = modeNormal
 		return m, nil
 	}
-	pane, err := newSessionWithSidebar(namePrefix+"-"+feature, m.issueRepo, prompt)
+	model := m.resolvedModelFor(roleDefault)
+	m = m.consumeModel()
+	pane, err := newSessionWithSidebar(namePrefix+"-"+feature, m.issueRepo, prompt, model)
 	if err != nil {
 		m.status = namePrefix + " session failed: " + err.Error()
 		m.mode = modeNormal
@@ -415,7 +434,14 @@ func (m model) dispatchDrain(bounded bool) (tea.Model, tea.Cmd) {
 		}
 		nums = append(nums, num)
 	}
-	prompt := drainPrompt(feature, nums, conf().Parallel.MaxConcurrency, bounded)
+	// The one-shot M override targets the work the drain does — i.e. the
+	// implementer subagents. The conflict resolver keeps its role default, and the
+	// orchestrator session itself uses the orchestrator default (inherit).
+	implModel := conf().Models.Resolve(m.modelFor(conf().Models.Implementer))
+	conflictModel := conf().Models.Resolve(conf().Models.Conflict)
+	orchModel := conf().Models.Resolve(conf().Models.Orchestrator)
+	m = m.consumeModel()
+	prompt := drainPrompt(feature, nums, conf().Parallel.MaxConcurrency, bounded, implModel, conflictModel)
 
 	verb := "draining"
 	if bounded {
@@ -426,7 +452,7 @@ func (m model) dispatchDrain(bounded bool) (tea.Model, tea.Cmd) {
 		base += fmt.Sprintf(", skipped %d not dispatchable (%s)", len(skipped), strings.Join(skipped, ", "))
 	}
 
-	m2, cmd := m.launchOrchestration("drain-"+feature, prompt, base)
+	m2, cmd := m.launchOrchestration("drain-"+feature, prompt, base, orchModel)
 	if mm, ok := m2.(model); ok {
 		mm.issueSelected = nil // clear the selection after kicking off the drain
 		return mm, cmd
@@ -440,12 +466,22 @@ func (m model) dispatchDrain(bounded bool) (tea.Model, tea.Cmd) {
 // (a "; sent to <session>" / spawn note is appended). It always leaves the model
 // in modeNormal and dismisses the popup after acting, matching the "selecting
 // acts and quits" popup contract.
-func (m model) launchOrchestration(spawnName, prompt, status string) (tea.Model, tea.Cmd) {
+//
+// orchModel is the resolved orchestrator-session model ("" = inherit). On the
+// fresh-session fallback it's passed as claude --model; on the hand-to-current
+// path the session already exists (can't be re-modeled), so the model is carried
+// in the prompt instead (a request the orchestrator honors for its OWN thread) —
+// the per-subagent models are already woven into prompt by the caller.
+func (m model) launchOrchestration(spawnName, prompt, status, orchModel string) (tea.Model, tea.Cmd) {
 	m.mode = modeNormal
 	// Preferred path: hand to the attached managed session (no fresh flagged
 	// process; work shows as ⊂N on that row).
 	if pane, ok := m.attachedManagedPane(); ok {
-		if err := reply(pane, prompt); err != nil {
+		handPrompt := prompt
+		if orchModel != "" {
+			handPrompt += fmt.Sprintf(" (Run this orchestration on the %s model.)", orchModel)
+		}
+		if err := reply(pane, handPrompt); err != nil {
 			m.status = "hand-off failed: " + err.Error()
 			return m, nil
 		}
@@ -466,7 +502,7 @@ func (m model) launchOrchestration(spawnName, prompt, status string) (tea.Model,
 		m.status = "can't spawn: capataz isn't in tmux (attach to a managed session to hand off)"
 		return m, nil
 	}
-	pane, err := newSessionWithSidebar(spawnName, m.issueRepo, prompt)
+	pane, err := newSessionWithSidebar(spawnName, m.issueRepo, prompt, orchModel)
 	if err != nil {
 		m.status = "drain session failed: " + err.Error()
 		return m, nil
@@ -537,7 +573,7 @@ func (m model) resolveConflict(c mergeCandidate, merged int) (tea.Model, tea.Cmd
 		return m, nil
 	}
 	prompt := fmt.Sprintf("Use the /capataz-fix-conflict skill: a merge of branch %s into the base in this repo is in progress and conflicted. Resolve the conflicts, run the build/tests, and commit the merge.", c.Branch)
-	pane, err := newSessionWithSidebar("fixconflict-"+leaf, m.issueRepo, prompt)
+	pane, err := newSessionWithSidebar("fixconflict-"+leaf, m.issueRepo, prompt, conf().Models.Resolve(conf().Models.Conflict))
 	if err != nil {
 		m.status = fmt.Sprintf("conflict merging %s and couldn't spawn resolver: %v", c.Branch, err)
 		m.mode = modeNormal
@@ -580,13 +616,54 @@ func worktreeDispatchPrompt(absIssuePath, branch string) string {
 //   - bounded (bounded == true): work EXACTLY the enumerated issues as
 //     parallel-safe waves and stop; do not pull in newly-ready siblings — the
 //     new w behavior. nums here is the exact, exhaustive set.
-func drainPrompt(feature string, nums []string, maxConcurrency int, bounded bool) string {
+// implModel/conflictModel are the resolved model aliases ("" = inherit) for the
+// capataz-work implementer subagents and the capataz-fix-conflict resolver
+// subagent the orchestrator spawns; they're woven into the prompt so the
+// orchestrator passes model + subagent_type to each Agent call per role (the
+// shipped agents from issue 01: capataz-implementer, capataz-conflict-resolver).
+func drainPrompt(feature string, nums []string, maxConcurrency int, bounded bool, implModel, conflictModel string) string {
 	common := "Work each issue in its own git worktree via a capataz-work subagent, merge clean branches back, spawn a capataz-fix-conflict subagent on any conflict, and do not stop for confirmation."
 	conc := fmt.Sprintf("Run at most %d capataz-work subagents at once (max concurrency).", maxConcurrency)
+	roles := subagentRoleInstruction(map[string]roleSpec{
+		"capataz-implementer":       {"capataz-work subagents", implModel},
+		"capataz-conflict-resolver": {"capataz-fix-conflict subagents", conflictModel},
+	})
 	if bounded {
-		return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain issues from the %q feature's .scratch backlog, merging into this repo's current branch (the base). Work exactly issues %s; do not pull in newly-ready siblings; stop when these are resolved. %s %s", feature, strings.Join(nums, ", "), common, conc)
+		return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain issues from the %q feature's .scratch backlog, merging into this repo's current branch (the base). Work exactly issues %s; do not pull in newly-ready siblings; stop when these are resolved. %s %s%s", feature, strings.Join(nums, ", "), common, conc, roles)
 	}
-	return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain the %q feature's .scratch backlog, merging into this repo's current branch (the base). Start with these ready issues: %s. Then keep draining any sibling issues in the same feature that become ready as their blockers resolve, until none are left. %s %s", feature, strings.Join(nums, ", "), common, conc)
+	return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain the %q feature's .scratch backlog, merging into this repo's current branch (the base). Start with these ready issues: %s. Then keep draining any sibling issues in the same feature that become ready as their blockers resolve, until none are left. %s %s%s", feature, strings.Join(nums, ", "), common, conc, roles)
+}
+
+// roleSpec pairs a human description of a subagent role with its resolved model
+// alias ("" = inherit / pass no model).
+type roleSpec struct {
+	desc  string
+	model string
+}
+
+// subagentRoleInstruction builds the appended sentence that tells an orchestrator
+// which subagent_type (and, when non-inherit, which model) to pass to each Agent
+// call per role. Roles with an inherit ("") model still get their subagent_type
+// named. Returns "" when there's nothing worth saying. Deterministic ordering
+// (implementer first) keeps the prompt stable. The subagent_type values are the
+// agents shipped in issue 01.
+func subagentRoleInstruction(roles map[string]roleSpec) string {
+	var parts []string
+	for _, agent := range []string{"capataz-implementer", "capataz-reviewer", "capataz-conflict-resolver"} {
+		r, ok := roles[agent]
+		if !ok {
+			continue
+		}
+		if r.model != "" {
+			parts = append(parts, fmt.Sprintf("%s with subagent_type=%s and model=%s", r.desc, agent, r.model))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s with subagent_type=%s", r.desc, agent))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " When you spawn subagents with the Agent tool, dispatch " + strings.Join(parts, ", and ") + "."
 }
 
 // repoWorktreeID builds a single filesystem-safe path segment that disambiguates
@@ -617,7 +694,13 @@ func (m model) handleStartWorkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if name == "" {
 			name = m.startIssue.Feature
 		}
-		pane, err := newSessionWithSidebar(name, m.issueRepo, m.issuePrompt())
+		// The orchestrator session runs on the orchestrator model; its implementer
+		// subagent runs on the implementer model (honoring the one-shot M override).
+		implModel := conf().Models.Resolve(m.modelFor(conf().Models.Implementer))
+		orchModel := conf().Models.Resolve(conf().Models.Orchestrator)
+		prompt := m.issuePrompt(implModel)
+		m = m.consumeModel()
+		pane, err := newSessionWithSidebar(name, m.issueRepo, prompt, orchModel)
 		if err != nil {
 			m.status = "new session failed: " + err.Error()
 			m.mode = modeNormal
@@ -646,7 +729,13 @@ func (m model) handleStartWorkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		pane := sel.TmuxPane
-		if err := reply(pane, m.issuePrompt()); err != nil {
+		// Hand-to-current: the session already exists, so its own model can't be
+		// changed from outside; carry the implementer subagent model in the prompt
+		// (issuePrompt) and consume the one-shot override.
+		implModel := conf().Models.Resolve(m.modelFor(conf().Models.Implementer))
+		prompt := m.issuePrompt(implModel)
+		m = m.consumeModel()
+		if err := reply(pane, prompt); err != nil {
 			m.status = "hand-off failed: " + err.Error()
 			m.mode = modeNormal
 			return m, nil
@@ -676,14 +765,28 @@ func (m model) handleStartWorkKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // back to absolute. When the sanity-check option is on, the check runs at the
 // orchestrator level (a second subagent) — subagents can't nest, so it can't
 // live inside the implementation subagent.
-func (m model) issuePrompt() string {
+// implModel is the resolved model alias ("" = inherit) for the capataz-work
+// implementation subagent; when non-empty it's woven into the Agent-spawn
+// instruction (along with the subagent_type from issue 01's shipped agents) so
+// the orchestrator routes the implementer to the right model.
+func (m model) issuePrompt(implModel string) string {
 	path := m.startIssue.Path
 	if rel, err := filepath.Rel(m.issueRepo, m.startIssue.Path); err == nil && !strings.HasPrefix(rel, "..") {
 		path = rel
 	}
-	prompt := fmt.Sprintf("Orchestrate the issue at %s: use the Agent tool to spawn a subagent that works it end to end with the /capataz-work skill (claim, implement, build/test, resolve). Don't implement in this thread — delegate to the subagent, then relay its result; if it reports blocked or needs-info, surface that.", path)
+	spawn := "use the Agent tool to spawn a subagent (subagent_type=capataz-implementer"
+	if implModel != "" {
+		spawn += ", model=" + implModel
+	}
+	spawn += ")"
+	prompt := fmt.Sprintf("Orchestrate the issue at %s: %s that works it end to end with the /capataz-work skill (claim, implement, build/test, resolve). Don't implement in this thread — delegate to the subagent, then relay its result; if it reports blocked or needs-info, surface that.", path, spawn)
 	if conf().Review.SanityCheck {
-		prompt += " Sanity check: have the implementation subagent stop after implementing (before it resolves) and hand back its diff, then spawn a separate fresh subagent to sanity-check that diff against the acceptance criteria; only resolve once it passes."
+		sanity := "spawn a separate fresh subagent (subagent_type=capataz-reviewer"
+		if rm := conf().Models.Resolve(conf().Models.Reviewer); rm != "" {
+			sanity += ", model=" + rm
+		}
+		sanity += ")"
+		prompt += " Sanity check: have the implementation subagent stop after implementing (before it resolves) and hand back its diff, then " + sanity + " to sanity-check that diff against the acceptance criteria; only resolve once it passes."
 	}
 	return prompt
 }
@@ -751,7 +854,11 @@ func (m model) issuesPopup(base string) string {
 		contentRows = 1
 	}
 
-	help := footerStyle.Render("↵ start work · space select · p drain feature · w work selected · R review · S security · Esc close")
+	help := footerStyle.Render("↵ start work · space select · p drain · w work · R review · S security · M model · Esc close")
+	if m.modelOverride != "" {
+		help = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("model→"+m.modelOverride) +
+			footerStyle.Render(" · ") + help
+	}
 	if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 		if f := m.issueList[m.issueCursor].Feature; m.featureAllDone(f) {
 			help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ "+f+" all resolved") +
@@ -1109,6 +1216,93 @@ func (m model) handleParallelConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeIssues
 	}
 	return m, nil
+}
+
+// handleModelPickerKey drives the model-override picker (opened with M): up/down
+// move the cursor, Enter picks the highlighted alias as the one-shot override for
+// the NEXT dispatch (work/drain keys and R/S), Esc/q cancels. Picking "default"
+// clears any pending override (back to role defaults). It returns to modeIssues
+// so the picker layers on top of the issue view without dispatching anything —
+// the override is applied when the next dispatch key is pressed.
+func (m model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.modelPickerCursor--
+	case "down", "j":
+		m.modelPickerCursor++
+	case "enter", " ":
+		if m.modelPickerCursor >= 0 && m.modelPickerCursor < len(modelChoices) {
+			choice := modelChoices[m.modelPickerCursor]
+			if choice == "default" {
+				m.modelOverride = "" // inherit — clears any pending override
+				m.status = "model override cleared — next dispatch uses role defaults"
+			} else {
+				m.modelOverride = choice
+				m.status = "next dispatch will use model: " + choice
+			}
+		}
+		m.mode = modeIssues
+		return m, nil
+	case "esc", "q":
+		m.mode = modeIssues
+		return m, nil
+	}
+	if m.modelPickerCursor < 0 {
+		m.modelPickerCursor = 0
+	}
+	if m.modelPickerCursor >= len(modelChoices) {
+		m.modelPickerCursor = len(modelChoices) - 1
+	}
+	return m, nil
+}
+
+// modelPickerPopup renders the one-shot model-override chooser: the fixed alias
+// set with the cursor row highlighted, plus a note on what it affects. Panic-safe
+// at all sizes (clamped width/height, no negative slice math) — TestRenderNoPanic
+// covers it.
+func (m model) modelPickerPopup(base string) string {
+	lines := []string{
+		"Model for the " + accentStyle.Bold(true).Render("next dispatch") + " only:",
+		"",
+	}
+	cursor := m.modelPickerCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(modelChoices) {
+		cursor = len(modelChoices) - 1
+	}
+	for i, alias := range modelChoices {
+		label := alias
+		if alias == "default" {
+			label = "default (inherit each role's default)"
+		}
+		if i == cursor {
+			lines = append(lines, accentBarStyle.Render("▎")+" "+accentStyle.Render(label))
+		} else {
+			lines = append(lines, "  "+label)
+		}
+	}
+	lines = append(lines,
+		"",
+		dimStyle.Render("  Overrides the per-role default for the next work/drain or R/S."),
+		dimStyle.Render("  Reviews still run in a fresh session (unbiased-review guarantee)."),
+		"",
+		footerStyle.Render("  ↑/↓ move · ↵ choose · Esc cancel"),
+	)
+	body := strings.Join(lines, "\n")
+	pw := 58
+	if pw > m.width-2 {
+		pw = m.width - 2
+	}
+	ph := len(lines) + 4
+	if ph > m.height-2 {
+		ph = m.height - 2
+	}
+	px := (m.width - pw) / 2
+	py := (m.height - ph) / 2
+	box := panel("Model override", body, pw, ph, true)
+	return overlay(base, box, px, py)
 }
 
 // parallelWarn returns why an issue in the selected set isn't safe to dispatch

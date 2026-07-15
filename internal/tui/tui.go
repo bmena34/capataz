@@ -42,6 +42,7 @@ const (
 	modeIssues
 	modeStartWork
 	modeParallelConfirm
+	modeModelPicker
 )
 
 type tickMsg time.Time
@@ -128,6 +129,44 @@ type model struct {
 	// (issues.ScratchModTime, no file reads) and skips the full scan when nothing
 	// changed, so idle browsing doesn't re-parse the whole backlog 60×/minute.
 	issueMod time.Time
+	// modelOverride is a one-shot model alias chosen from the M picker
+	// (modeModelPicker). When non-empty it overrides the per-role config default
+	// (config.Models) for the NEXT dispatch only — the work/drain keys and R/S —
+	// then is cleared by consumeModel. Empty means "use each role's default".
+	// modelPickerCursor is the picker's selected row.
+	modelOverride     string
+	modelPickerCursor int
+}
+
+// modelChoices is the fixed alias set the M picker offers, in display order.
+// "default" means inherit (pass no model / no per-subagent model).
+var modelChoices = []string{"opus", "sonnet", "fable", "haiku", "default"}
+
+// modelFor returns the model alias to thread into a dispatch for a role whose
+// config default is roleDefault: the one-shot M override when set, else the
+// role default. The returned value is still an alias (opus/sonnet/.../default);
+// callers pass it through config.Models.Resolve to collapse default/unknown to
+// "" (inherit). This does NOT clear the override — call consumeModel for that.
+func (m model) modelFor(roleDefault string) string {
+	if m.modelOverride != "" {
+		return m.modelOverride
+	}
+	return roleDefault
+}
+
+// resolvedModelFor is modelFor collapsed to a --model value: "" means inherit
+// (pass no model), otherwise a concrete alias. Tolerant of unknown overrides
+// (they collapse to inherit) via config.Models.Resolve.
+func (m model) resolvedModelFor(roleDefault string) string {
+	return conf().Models.Resolve(m.modelFor(roleDefault))
+}
+
+// consumeModel clears the one-shot override after a dispatch has read it, so the
+// next dispatch falls back to role defaults. Returns the updated model for the
+// caller to thread through its (tea.Model, tea.Cmd) return.
+func (m model) consumeModel() model {
+	m.modelOverride = ""
+	return m
 }
 
 // Run starts the dashboard. It blocks until the user quits.
@@ -534,6 +573,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeParallelConfirm {
 		return m.handleParallelConfirmKey(msg)
 	}
+	if m.mode == modeModelPicker {
+		return m.handleModelPickerKey(msg)
+	}
 	if m.mode == modeLog {
 		key := msg.String()
 		if m.gPending {
@@ -865,7 +907,7 @@ func (m model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "can't spawn: capataz isn't in tmux"
 			return m, nil
 		}
-		pane, err := newSessionWithSidebar(name, m.newDir, "")
+		pane, err := newSessionWithSidebar(name, m.newDir, "", "")
 		if err != nil {
 			m.status = "new session failed: " + err.Error()
 			return m, nil
@@ -1139,6 +1181,8 @@ func (m model) View() string {
 		return m.startWorkPopup(base)
 	case modeParallelConfirm:
 		return m.parallelConfirmPopup(base)
+	case modeModelPicker:
+		return m.modelPickerPopup(base)
 	}
 	return base
 }

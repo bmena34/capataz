@@ -61,13 +61,19 @@ func TestWorktreeDispatchPromptShape(t *testing.T) {
 // seed numbers; the bounded variant must additionally forbid pulling in
 // siblings, and the whole-feature variant must invite them.
 func TestDrainPromptVariants(t *testing.T) {
-	whole := drainPrompt("login", []string{"01", "03"}, 4, false)
+	whole := drainPrompt("login", []string{"01", "03"}, 4, false, "sonnet", "opus")
 	for _, want := range []string{
 		"/capataz-drain skill",
 		`"login"`,
 		"01, 03",
 		"max concurrency",
 		"become ready", // whole-feature invites newly-ready siblings
+		// Per-role subagent routing (issue 04): each subagent_type + model is woven
+		// into the prompt so the orchestrator dispatches the right agent/model.
+		"subagent_type=capataz-implementer",
+		"model=sonnet",
+		"subagent_type=capataz-conflict-resolver",
+		"model=opus",
 	} {
 		if !strings.Contains(whole, want) {
 			t.Errorf("whole-feature prompt missing %q:\n%s", want, whole)
@@ -77,7 +83,16 @@ func TestDrainPromptVariants(t *testing.T) {
 		t.Errorf("whole-feature prompt must not forbid siblings:\n%s", whole)
 	}
 
-	bounded := drainPrompt("login", []string{"01", "03"}, 4, true)
+	// An inherit ("") implementer model names the subagent_type but omits model=.
+	inherit := drainPrompt("login", []string{"01"}, 4, false, "", "")
+	if !strings.Contains(inherit, "subagent_type=capataz-implementer") {
+		t.Errorf("inherit prompt must still name the implementer subagent_type:\n%s", inherit)
+	}
+	if strings.Contains(inherit, "model=") {
+		t.Errorf("inherit prompt must not pin a model:\n%s", inherit)
+	}
+
+	bounded := drainPrompt("login", []string{"01", "03"}, 4, true, "sonnet", "opus")
 	for _, want := range []string{
 		"/capataz-drain skill",
 		`"login"`,

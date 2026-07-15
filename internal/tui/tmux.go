@@ -220,7 +220,7 @@ func bootstrapOutsideTmux() error {
 		return attachTmux("") // most-recently-used session
 	}
 	dir, name := promptDirAndName()
-	pane, err := newSessionWithSidebar(name, dir, "")
+	pane, err := newSessionWithSidebar(name, dir, "", "")
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
@@ -298,7 +298,13 @@ func paneOrigin(pane string) (session, windowID string, err error) {
 // its own named session whose layout travels with it. When prompt is non-empty
 // it's passed to claude as its opening prompt (`claude "<prompt>"`), so the
 // agent boots straight into the work — no send-keys timing to fight.
-func newClaudeSession(name, dir, prompt string) (string, error) {
+//
+// model, when non-empty, is passed as `claude --model <alias>` so a dispatched
+// session runs on the role's chosen model (see config.Models). Empty means
+// inherit — pass no --model. It's threaded only on this fresh-session fallback;
+// the hand-to-current dispatch path carries the model in the prompt instead
+// (that session already exists and can't be re-modeled from outside).
+func newClaudeSession(name, dir, prompt, model string) (string, error) {
 	name = sanitizeName(name)
 	if name == "" {
 		name = sessionBase(dir)
@@ -315,6 +321,12 @@ func newClaudeSession(name, dir, prompt string) (string, error) {
 		args = append(args, "-c", dir)
 	}
 	args = append(args, "claude")
+	if model != "" {
+		// Route this dispatched session onto the role's model. Only set on a
+		// non-empty prompt path in practice (interactive sessions pass ""), but
+		// guard independently so an interactive session is never re-modeled.
+		args = append(args, "--model", model)
+	}
 	if prompt != "" {
 		// A prompt means this is a dispatched session (the drain orchestrator, a
 		// review, a fix-conflict) booting straight into automated work — not the
@@ -424,9 +436,10 @@ func attachSidebar(targetPane string) error {
 
 // newSessionWithSidebar creates a new claude session and attaches a dashboard
 // sidebar to it. A sidebar failure is non-fatal — the session is still usable.
-// prompt, when non-empty, is claude's opening prompt (see newClaudeSession).
-func newSessionWithSidebar(name, dir, prompt string) (string, error) {
-	pane, err := newClaudeSession(name, dir, prompt)
+// prompt, when non-empty, is claude's opening prompt (see newClaudeSession);
+// model, when non-empty, is the --model alias to run it on.
+func newSessionWithSidebar(name, dir, prompt, model string) (string, error) {
+	pane, err := newClaudeSession(name, dir, prompt, model)
 	if err != nil {
 		return "", err
 	}
