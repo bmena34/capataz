@@ -1650,44 +1650,51 @@ func tailLines(s string, n int) string {
 
 func (m model) helpPopup(base string) string {
 	hdr := func(s string) string { return accentStyle.Bold(true).Render(s) }
+	// row keeps a tight key column + a terse description so the whole line fits
+	// the sidebar width most people run capataz at (~40 cols) without truncating.
+	// Keys hold multi-byte runes (↵ ↑ ↓), so pad by display width, not byte len.
+	row := func(key, desc string) string {
+		pad := 9 - ansi.StringWidth(key)
+		if pad < 1 {
+			pad = 1
+		}
+		return "  " + key + strings.Repeat(" ", pad) + footerStyle.Render(desc)
+	}
 	lines := []string{
 		hdr("Navigation"),
-		"  j / k  ·  ↑ / ↓      move selection",
-		"  gg  ·  G              jump to top / bottom",
-		"  Ctrl+d  ·  Ctrl+u     scroll half-page down / up",
+		row("j/k ↑/↓", "move"),
+		row("gg / G", "top / bottom"),
+		row("^d / ^u", "half-page"),
 		"",
 		hdr("Sessions"),
-		"  Enter / o             switch to the session (full screen)",
-		"  n                     new claude session (dir, then name)",
-		"  r                     quick reply without leaving the dashboard",
-		"  c                     threaded conversation history",
-		"  d                     peek at the hovered session's detail",
-		"  l                     event log",
-		"  R                     rename the selected tmux session",
-		"  x                     quit a session (graceful, with confirm);",
-		"                        dismiss an ended row from the resume list",
+		row("↵ / o", "switch to it"),
+		row("n", "new session"),
+		row("r", "quick reply"),
+		row("c", "conversation"),
+		row("d", "peek detail"),
+		row("l", "event log"),
+		row("R", "rename"),
+		row("x", "quit / dismiss"),
 		"",
-		hdr("Issues  (open with i)"),
-		"  Enter / o             open start-work chooser (n new · h hand-off)",
-		"  space                 toggle multi-select (for p / P / w dispatch)",
-		"  p                     drain whole feature — review selection first",
-		"  P                     drain whole feature — skip confirm, start now",
-		"  w                     work exactly the selected issues and stop",
-		"  R                     in-depth review of the feature (fresh session)",
-		"  S                     OWASP security review (fresh session)",
-		"  M                     model override for the next dispatch only",
-		"  m                     merge resolved worktree branches back",
-		"  x                     prune orphaned dispatch worktrees",
-		"  i                     open issue backlog (from main dashboard)",
-		"  ?                     open this shortcuts popup",
+		hdr("Issues (i)"),
+		row("↵ / o", "start work"),
+		row("space", "select"),
+		row("p / P", "drain feature"),
+		row("w", "work selected"),
+		row("R", "review"),
+		row("S", "security"),
+		row("M", "model"),
+		row("m", "merge ready"),
+		row("x", "prune orphans"),
+		row("?", "shortcuts"),
 		"",
 		hdr("Other"),
-		"  ?                     toggle this help (from main dashboard)",
-		"  q / Esc               close / dismiss the popup",
+		row("?", "toggle help"),
+		row("q / Esc", "close"),
 	}
 	body := strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("  ? or Esc to close")
 
-	pw := 64
+	pw := 44
 	if pw > m.width-2 {
 		pw = m.width - 2
 	}
