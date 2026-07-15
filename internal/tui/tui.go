@@ -1652,29 +1652,42 @@ func (m model) helpPopup(base string) string {
 	hdr := func(s string) string { return accentStyle.Bold(true).Render(s) }
 	lines := []string{
 		hdr("Navigation"),
-		"  j / k   ↑ / ↓       move selection",
-		"  gg / G              jump to top / bottom",
-		"  Ctrl+d / Ctrl+u     half-page down / up",
+		"  j / k  ·  ↑ / ↓      move selection",
+		"  gg  ·  G              jump to top / bottom",
+		"  Ctrl+d  ·  Ctrl+u     scroll half-page down / up",
 		"",
 		hdr("Sessions"),
-		"  Enter / o           switch to the session (full screen)",
-		"  n                   new claude session (dir, then name)",
-		"  R                   rename the selected tmux session",
-		"  r                   quick reply without leaving the dashboard",
-		"  c                   conversation — threaded history",
-		"  d                   peek at the hovered session's detail",
-		"  l                   event log",
-		"  i                   issues — browse this repo's .scratch backlog",
-		"                      (in issues: ↵ work · space select · p parallel · R review)",
-		"  x                   quit a session (graceful, with confirm)",
+		"  Enter / o             switch to the session (full screen)",
+		"  n                     new claude session (dir, then name)",
+		"  r                     quick reply without leaving the dashboard",
+		"  c                     threaded conversation history",
+		"  d                     peek at the hovered session's detail",
+		"  l                     event log",
+		"  R                     rename the selected tmux session",
+		"  x                     quit a session (graceful, with confirm);",
+		"                        dismiss an ended row from the resume list",
+		"",
+		hdr("Issues  (open with i)"),
+		"  Enter / o             open start-work chooser (n new · h hand-off)",
+		"  space                 toggle multi-select (for p / P / w dispatch)",
+		"  p                     drain whole feature — review selection first",
+		"  P                     drain whole feature — skip confirm, start now",
+		"  w                     work exactly the selected issues and stop",
+		"  R                     in-depth review of the feature (fresh session)",
+		"  S                     OWASP security review (fresh session)",
+		"  M                     model override for the next dispatch only",
+		"  m                     merge resolved worktree branches back",
+		"  x                     prune orphaned dispatch worktrees",
+		"  i                     open issue backlog (from main dashboard)",
+		"  ?                     open this shortcuts popup",
 		"",
 		hdr("Other"),
-		"  ?                   toggle this help",
-		"  q / Esc             close (Esc dismisses the popup)",
+		"  ?                     toggle this help (from main dashboard)",
+		"  q / Esc               close / dismiss the popup",
 	}
 	body := strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("  ? or Esc to close")
 
-	pw := 62
+	pw := 64
 	if pw > m.width-2 {
 		pw = m.width - 2
 	}
