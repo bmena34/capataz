@@ -1429,7 +1429,6 @@ func usageLine(label string, pct int, reset time.Time) string {
 	return line + "\n"
 }
 
-
 // split partitions the sorted session list into the three dashboard groups:
 // needs (live sessions waiting on you), active (live sessions working), and
 // resumable (retained ended sessions — dead panes we keep so you can bring them
@@ -1518,7 +1517,7 @@ func (m model) keybarLines() []string {
 		width = 12
 	}
 
-	hint := keybarStyle.Render("? shortcuts")
+	hint := keybarStyle.Render("? help")
 	hintW := ansi.StringWidth(hint)
 	dotW := ansi.StringWidth(dot)
 	// Left: one leading space + hint. Right: dot + one trailing space.
