@@ -12,6 +12,8 @@ func TestRenderNoPanic(t *testing.T) {
 	m.sessions = []proto.Session{
 		{ID: "a", TmuxPane: "%1", State: proto.StateWaiting, Cwd: "/Users/x/proj", ContextTokens: 500000, OutTokens: 400, Model: "claude-opus-4-8", Subagents: 2},
 		{ID: "b", TmuxPane: "%2", State: proto.StateWorking, Cwd: "/Users/x/other"},
+		// A retained ended session drives the new Resumable panel render path.
+		{ID: "c", TmuxPane: "", State: proto.StateEnded, Cwd: "/Users/x/proj", Name: "proj"},
 	}
 	m.limits = proto.Usage{OK: true, SessionPct: 61, WeeklyPct: 8}
 	// A cached backlog so the inline sidebar Issues panel is exercised too.

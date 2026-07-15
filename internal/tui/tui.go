@@ -582,12 +582,19 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// `claude --resume <id>`. Its SessionStart fires with the same
 				// session_id and a new pane, so the daemon repopulates this very
 				// row and it goes live automatically — no duplicate.
-				if _, err := resumeSessionWithSidebar(m.label(s), s.Cwd, s.ID); err != nil {
+				pane, err := resumeSessionWithSidebar(m.label(s), s.Cwd, s.ID)
+				if err != nil {
 					m.status = "resume failed: " + err.Error()
 				} else {
 					m.status = "resuming " + m.label(s) + "…"
+					// Switch the client onto the freshly spawned pane, same as
+					// every other spawn path — otherwise claude --resume launches
+					// in the background and the operator is left where they were.
+					if jerr := jump(pane); jerr != nil {
+						m.status = "resumed but switch failed: " + jerr.Error()
+					}
 					if m.popup {
-						return m, tea.Quit // close the popup; the session is coming back
+						return m, tea.Quit // close the popup; client is now on the session
 					}
 				}
 			} else if err := jump(s.TmuxPane); err != nil {
@@ -637,9 +644,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x": // ended row → dismiss from the resume list; live row → graceful quit
 		if s, ok := m.current(); ok {
 			if s.State == proto.StateEnded {
-				// Retained (resumable) row: drop it from the resume list. The daemon
-				// deletes it from the store and broadcasts a "remove" so every
-				// dashboard forgets the row. (TrimEnded would eventually reclaim it,
+				// Retained (resumable) row: tear down the leftover tmux session AND
+				// drop the row. When claude exits, its sibling capataz sidebar pane
+				// keeps the tmux session alive as a zombie; dismissing is the operator
+				// saying "done with this", so kill the whole session (sidebar included),
+				// not just forget the row. Guarded by a live-claude check so a stale
+				// row can never reap a session tmux has reused for a running agent.
+				if s.Name != "" && !tmuxSessionHasLiveClaude(s.Name) {
+					_ = killSession(s.Name)
+				}
+				// The daemon deletes the row from the store and broadcasts a "remove"
+				// so every dashboard forgets it. (TrimEnded would eventually reclaim it,
 				// but dismiss lets the operator clear one now.)
 				if err := dismissSession(s.ID); err != nil {
 					m.status = "dismiss failed: " + err.Error()
@@ -1186,7 +1201,7 @@ func (m model) dashboardView() string {
 		bodyH = 6
 	}
 
-	needs, active := m.split()
+	needs, active, resumable := m.split()
 
 	needsH := len(needs) + 2
 	if needsH < 3 {
@@ -1196,16 +1211,22 @@ func (m model) dashboardView() string {
 	if activeH < 3 {
 		activeH = 3
 	}
+	// The Resumable panel only appears when there's retained history to show, so
+	// a fresh dashboard with no dead sessions stays uncluttered.
+	resumableH := 0
+	if len(resumable) > 0 {
+		resumableH = len(resumable) + 2
+	}
 
-	// The Needs You + Active lists always get their full height (sessions are
-	// never hidden). The leftover splits between Detail (sized to its content)
-	// and an Issues panel that fills whatever remains — so the backlog lives in
-	// the sidebar's spare space instead of behind a keypress.
-	leftover := bodyH - needsH - activeH
+	// The Needs You + Active (+ Resumable) lists always get their full height
+	// (sessions are never hidden). The leftover splits between Detail (sized to
+	// its content) and an Issues panel that fills whatever remains — so the
+	// backlog lives in the sidebar's spare space instead of behind a keypress.
+	leftover := bodyH - needsH - activeH - resumableH
 	showExtra := leftover >= 6
 	if !showExtra {
 		leftover = 0
-		activeH = bodyH - needsH
+		activeH = bodyH - needsH - resumableH
 		if activeH < 3 {
 			activeH = 3
 		}
@@ -1214,6 +1235,9 @@ func (m model) dashboardView() string {
 	panels := []string{
 		panel(fmt.Sprintf("Needs You (%d)", len(needs)), m.listBody(needs, w-2, true), w, needsH, m.cursorIn(needs)),
 		panel(fmt.Sprintf("Active (%d)", len(active)), m.listBody(active, w-2, false), w, activeH, m.cursorIn(active)),
+	}
+	if resumableH > 0 {
+		panels = append(panels, panel(fmt.Sprintf("Resumable (%d)", len(resumable)), m.listBody(resumable, w-2, false), w, resumableH, m.cursorIn(resumable)))
 	}
 	if showExtra {
 		focused, hasFocused := m.focused()
@@ -1325,11 +1349,19 @@ func usageLine(label string, pct int, reset time.Time) string {
 }
 
 
-func (m model) split() (needs, active []proto.Session) {
+// split partitions the sorted session list into the three dashboard groups:
+// needs (live sessions waiting on you), active (live sessions working), and
+// resumable (retained ended sessions — dead panes we keep so you can bring them
+// back with `claude --resume`). An ended session is NOT "active", so it gets its
+// own group instead of inflating the Active count with dead rows.
+func (m model) split() (needs, active, resumable []proto.Session) {
 	for _, s := range m.sessions {
-		if s.State.NeedsYou() {
+		switch {
+		case s.State == proto.StateEnded:
+			resumable = append(resumable, s)
+		case s.State.NeedsYou():
 			needs = append(needs, s)
-		} else {
+		default:
 			active = append(active, s)
 		}
 	}

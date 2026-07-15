@@ -168,6 +168,42 @@ func killWindow(window string) error {
 	return nil
 }
 
+// tmuxSessionHasLiveClaude reports whether the tmux session named `name` has a
+// running (non-dead) claude pane in any of its windows. Dismiss uses it to avoid
+// killing a session that tmux has reused for a live agent — freed session names
+// can be reused, so a stale resumable row could point at a name a new agent now
+// holds. The `=` prefix forces an exact name match so "redis" can't fuzzy-match
+// "redis-2".
+func tmuxSessionHasLiveClaude(name string) bool {
+	if name == "" {
+		return false
+	}
+	out, err := exec.Command("tmux", "list-panes", "-s", "-t", "="+name,
+		"-F", "#{pane_current_command}\t#{pane_dead}").Output()
+	if err != nil {
+		return false // session gone (or error) → nothing live to protect
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.SplitN(line, "\t", 2)
+		if len(f) == 2 && f[0] == "claude" && f[1] == "0" {
+			return true
+		}
+	}
+	return false
+}
+
+// killSession tears down an entire tmux session (all its windows and panes) by
+// exact name. Best-effort — a session that is already gone is not a real error.
+func killSession(name string) error {
+	if name == "" {
+		return fmt.Errorf("no session name")
+	}
+	if out, err := exec.Command("tmux", "kill-session", "-t", "="+name).CombinedOutput(); err != nil {
+		return fmt.Errorf("kill-session: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // inTmux reports whether capataz is running inside a tmux pane.
 func inTmux() bool { return os.Getenv("TMUX") != "" && os.Getenv("TMUX_PANE") != "" }
 
