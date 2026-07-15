@@ -51,6 +51,19 @@ func listen(ch chan tea.Msg) {
 	}
 }
 
+// dismissSession asks the daemon to drop a retained (ended) session from the
+// resume list: a one-shot dial that sends a "dismiss" command. The daemon
+// deletes it from the store and broadcasts a "remove" so every dashboard drops
+// the row.
+func dismissSession(id string) error {
+	conn, err := net.Dial("unix", paths.Sock())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return json.NewEncoder(conn).Encode(proto.Msg{Type: "dismiss", SessionID: id})
+}
+
 // waitForMsg yields the next message from the listen goroutine's channel.
 func waitForMsg(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg { return <-ch }

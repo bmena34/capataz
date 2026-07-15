@@ -101,12 +101,19 @@ type Session struct {
 	// Git context for the session's cwd. GitDirty is -1 when unknown/not a repo.
 	GitBranch string `json:"git_branch"`
 	GitDirty  int    `json:"git_dirty"`
+
+	// Name is the tmux session name captured while the pane was live, persisted
+	// so a resumed (ended, empty-pane) session can be relaunched under its former
+	// (possibly renamed) label instead of falling back to the cwd basename.
+	Name string `json:"name"`
 }
 
-// Msg is a client->daemon envelope (hook events and TUI subscribe requests).
+// Msg is a client->daemon envelope (hook events, TUI subscribe requests, and
+// dashboard commands like dismissing a retained session).
 type Msg struct {
-	Type  string `json:"type"` // "event" | "subscribe"
-	Event *Event `json:"event,omitempty"`
+	Type      string `json:"type"` // "event" | "subscribe" | "dismiss"
+	Event     *Event `json:"event,omitempty"`
+	SessionID string `json:"session_id,omitempty"` // target for "dismiss"
 }
 
 // Usage is the account's live plan usage (the Settings → Usage numbers). The

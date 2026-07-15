@@ -16,6 +16,26 @@ type Config struct {
 	Review   Review   `json:"review"`
 	Dispatch Dispatch `json:"dispatch"`
 	Parallel Parallel `json:"parallel"`
+	Context  Context  `json:"context"`
+	Resume   Resume   `json:"resume"`
+}
+
+// Resume controls retention of ended sessions so they survive a tmux/machine
+// restart and can be resumed later.
+type Resume struct {
+	// MaxRetained caps how many ended sessions the daemon keeps persisted (the
+	// most-recent by last_change). Older ended rows are trimmed. Default 20.
+	MaxRetained int `json:"max_retained"`
+}
+
+// Context tunes the context-window gauge. The transcript records only the bare
+// model id (never the [1m] beta marker), so a 1M session can't be auto-detected;
+// Limits lets you pin a window size per model.
+type Context struct {
+	// Limits maps a model id (matched exactly or as a substring of the reported,
+	// lowercased model) to a window size ("1m", "200k", or a raw number). Empty
+	// by default; unmatched models fall back to the built-in table.
+	Limits map[string]string `json:"limits"`
 }
 
 // Parallel controls the hands-off drain (the dashboard's p key).
@@ -83,6 +103,7 @@ func Default() Config {
 		Sidebar:  Sidebar{Width: 40},
 		Dispatch: Dispatch{SkipPermissions: true},
 		Parallel: Parallel{MaxConcurrency: 3},
+		Resume:   Resume{MaxRetained: 20},
 	}
 }
 
@@ -108,6 +129,9 @@ func Load() Config {
 	}
 	if c.Parallel.MaxConcurrency <= 0 {
 		c.Parallel.MaxConcurrency = d.Parallel.MaxConcurrency
+	}
+	if c.Resume.MaxRetained <= 0 {
+		c.Resume.MaxRetained = d.Resume.MaxRetained
 	}
 	return c
 }

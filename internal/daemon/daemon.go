@@ -88,9 +88,10 @@ func Run() error {
 }
 
 // reload repopulates sessions from the store on startup so a daemon restart
-// doesn't drop still-running sessions from the dashboard. Pruned on reload:
-// detached (paneless) sessions — capataz only tracks tmux sessions — and paned
-// sessions whose tmux pane no longer exists.
+// doesn't drop sessions from the dashboard. Ended (resumable) rows are kept as
+// they are; live-paned sessions stay live; a paned session whose tmux pane died
+// while the daemon was down is marked ended (retained, not dropped). Nothing is
+// deleted on reload — trimming of old ended rows is left to TrimEnded.
 func (h *hub) reload() {
 	saved, err := h.store.LoadSessions()
 	if err != nil {
@@ -100,15 +101,18 @@ func (h *hub) reload() {
 	alive := livePanes()
 	kept := 0
 	for _, s := range saved {
-		if s.TmuxPane == "" || (alive != nil && !alive[s.TmuxPane]) {
-			_ = h.store.DeleteSession(s.ID) // detached or pane gone — prune
-			continue
-		}
 		sc := s
-		h.sessions[s.ID] = &sc
+		if sc.State != proto.StateEnded && (sc.TmuxPane == "" || (alive != nil && !alive[sc.TmuxPane])) {
+			// Pane died while the daemon was down — retain as ended, not drop.
+			sc.State = proto.StateEnded
+			sc.TmuxPane = ""
+			_ = h.store.SaveSession(sc)
+		}
+		h.sessions[sc.ID] = &sc
 		kept++
 	}
-	logging.Infof("reloaded %d live session(s) from store", kept)
+	h.trimEnded()
+	logging.Infof("reloaded %d session(s) from store", kept)
 	count, color := h.needsSummaryLocked()
 	h.updateBadge(count, color)
 }
@@ -129,13 +133,28 @@ func livePanes() map[string]bool {
 	return set
 }
 
+// paneSessionName returns the tmux session name that owns a pane, or "" if tmux
+// can't resolve it (pane gone, tmux unreachable). Used to capture a session's
+// display name while its pane is live so a resumed row keeps it.
+func paneSessionName(pane string) string {
+	if pane == "" {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", pane, "#{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // pruneInterval is how often the daemon sweeps for sessions whose pane has died.
 const pruneInterval = 5 * time.Second
 
-// pruneLoop periodically drops sessions whose tmux pane no longer exists (killed
-// from the dashboard, crashed, or closed without a SessionEnd) and broadcasts
-// the removal, so dead sessions vanish from every dashboard within seconds
-// rather than lingering until a daemon restart.
+// pruneLoop periodically finds sessions whose tmux pane no longer exists (killed
+// from the dashboard, crashed, or closed without a SessionEnd) and transitions
+// them to the ended (resumable) state rather than deleting them, so the row
+// survives a tmux/machine restart. Already-ended rows are skipped so they aren't
+// re-processed every sweep.
 func (h *hub) pruneLoop() {
 	for {
 		time.Sleep(pruneInterval)
@@ -144,24 +163,67 @@ func (h *hub) pruneLoop() {
 			continue // tmux unreachable — don't prune blindly
 		}
 		h.mu.Lock()
-		var dead []string
-		for id, s := range h.sessions {
+		var ended []proto.Session
+		for _, s := range h.sessions {
+			if s.State == proto.StateEnded {
+				continue // already ended — don't re-sweep
+			}
 			if s.TmuxPane == "" || !alive[s.TmuxPane] {
-				delete(h.sessions, id)
-				dead = append(dead, id)
+				s.State = proto.StateEnded
+				s.TmuxPane = ""
+				ended = append(ended, *s)
 			}
 		}
 		count, color := h.needsSummaryLocked()
 		h.mu.Unlock()
 
-		for _, id := range dead {
-			_ = h.store.DeleteSession(id)
-			logging.Infof("swept dead session %s", shortID(id))
-			h.broadcast(proto.Push{Type: "remove", Session: &proto.Session{ID: id}})
+		for _, snap := range ended {
+			_ = h.store.SaveSession(snap)
+			logging.Infof("swept dead pane, ended session %s", shortID(snap.ID))
+			s := snap
+			h.broadcast(proto.Push{Type: "update", Session: &s})
 		}
-		if len(dead) > 0 {
+		if len(ended) > 0 {
 			h.updateBadge(count, color)
+			h.trimEnded()
 		}
+	}
+}
+
+// trimEnded caps the retained ended rows in the store AND evicts the same rows
+// from the in-memory h.sessions map, so the two never diverge on a live daemon.
+// TrimEnded returns the ids it deleted (the over-cap, least-recent ended rows);
+// we then remove those ids from the map under h.mu and broadcast a "remove" for
+// each so every dashboard drops the stale row — mirroring handleDismiss. Store
+// write and broadcast run outside the lock, matching handleEvent/pruneLoop.
+func (h *hub) trimEnded() {
+	deleted, err := h.store.TrimEnded(h.cfg.Resume.MaxRetained)
+	if err != nil {
+		logging.Errorf("trim ended: %v", err)
+		return
+	}
+	if len(deleted) == 0 {
+		return
+	}
+	h.mu.Lock()
+	var removed []proto.Session
+	for _, id := range deleted {
+		if s := h.sessions[id]; s != nil {
+			removed = append(removed, *s)
+			delete(h.sessions, id)
+		}
+	}
+	count, color := h.needsSummaryLocked()
+	h.mu.Unlock()
+
+	if len(removed) == 0 {
+		return
+	}
+	h.updateBadge(count, color)
+	for i := range removed {
+		s := removed[i]
+		logging.Infof("trimmed ended session %s (over cap)", shortID(s.ID))
+		h.broadcast(proto.Push{Type: "remove", Session: &s})
 	}
 }
 
@@ -181,7 +243,33 @@ func (h *hub) serve(conn net.Conn) {
 		}
 	case "subscribe":
 		h.handleSubscribe(conn)
+	case "dismiss":
+		if m.SessionID != "" {
+			h.handleDismiss(m.SessionID)
+		}
 	}
+}
+
+// handleDismiss drops a retained (ended) session from the resume list: remove
+// it from the in-memory map and the store, then broadcast a "remove" so every
+// dashboard forgets the row. Only ended sessions are dismissable — dismissing a
+// live session would just orphan its pane, so those are left to the kill path.
+func (h *hub) handleDismiss(id string) {
+	h.mu.Lock()
+	s := h.sessions[id]
+	if s == nil || s.State != proto.StateEnded {
+		h.mu.Unlock()
+		return
+	}
+	snap := *s
+	delete(h.sessions, id)
+	count, color := h.needsSummaryLocked()
+	h.mu.Unlock()
+
+	_ = h.store.DeleteSession(id)
+	logging.Infof("dismissed ended session %s", shortID(id))
+	h.updateBadge(count, color)
+	h.broadcast(proto.Push{Type: "remove", Session: &snap})
 }
 
 func (h *hub) handleSubscribe(conn net.Conn) {
@@ -246,6 +334,13 @@ func (h *hub) handleEvent(e proto.Event) {
 	}
 	if e.TmuxPane != "" {
 		s.TmuxPane = e.TmuxPane
+		// Capture the tmux session name while the pane is live, so an ended
+		// (empty-pane) row can later be resumed under its former (possibly
+		// renamed) label rather than the cwd basename. Best-effort: keep the
+		// prior name if the lookup fails.
+		if name := paneSessionName(e.TmuxPane); name != "" {
+			s.Name = name
+		}
 	}
 	if e.TranscriptPath != "" {
 		s.TranscriptPath = e.TranscriptPath
@@ -296,10 +391,12 @@ func (h *hub) handleEvent(e proto.Event) {
 	}
 	s.State = state
 
-	removed := false
 	if e.Kind == proto.KindSessionEnd {
-		delete(h.sessions, e.SessionID)
-		removed = true
+		// Retain the session as a resumable (ended) row rather than deleting it,
+		// so it survives a tmux/machine restart. State==ended + empty pane is the
+		// resumable marker.
+		s.State = proto.StateEnded
+		s.TmuxPane = ""
 	}
 	snap := *s
 	needsCount, needsColor := h.needsSummaryLocked()
@@ -312,19 +409,13 @@ func (h *hub) handleEvent(e proto.Event) {
 		TS: now, SessionID: e.SessionID, Kind: string(e.Kind),
 		State: string(state), Cwd: snap.Cwd, Summary: snap.Summary,
 	})
-	if removed {
-		_ = h.store.DeleteSession(e.SessionID)
-	} else {
-		_ = h.store.SaveSession(snap)
-	}
-
-	pushType := "update"
-	if removed {
-		pushType = "remove"
-	}
+	_ = h.store.SaveSession(snap)
 	logging.Infof("event kind=%s state=%s session=%s pane=%q cwd=%s",
 		e.Kind, state, shortID(e.SessionID), snap.TmuxPane, snap.Cwd)
-	h.broadcast(proto.Push{Type: pushType, Session: &snap})
+	h.broadcast(proto.Push{Type: "update", Session: &snap})
+	if e.Kind == proto.KindSessionEnd {
+		h.trimEnded()
+	}
 }
 
 func (h *hub) broadcast(p proto.Push) {
