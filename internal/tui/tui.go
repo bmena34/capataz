@@ -482,6 +482,25 @@ func (m *model) anotherSession(excludeID string) (proto.Session, bool) {
 	return proto.Session{}, false
 }
 
+// attachedManagedPane returns the live tmux pane of the managed session the
+// user's client is attached to, or ok == false when the client isn't on any
+// managed session (or that session has no live pane). Dispatch hands the
+// orchestration prompt to this pane so the work shows as a ⊂N subagent count on
+// that row and inherits the session's already-trusted posture — no fresh
+// bypass-permissions claude process. When ok is false, callers fall back to
+// spawning a fresh sidebar-backed session.
+func (m *model) attachedManagedPane() (string, bool) {
+	idx := m.attachedIndex()
+	if idx < 0 {
+		return "", false
+	}
+	pane := m.sessions[idx].TmuxPane
+	if pane == "" {
+		return "", false
+	}
+	return pane, true
+}
+
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeHelp {
 		m.mode = modeNormal // any key closes the help

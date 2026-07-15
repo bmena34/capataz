@@ -246,8 +246,14 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.mode = modeParallelConfirm
-	case "P": // skip the confirm modal — start the drain immediately
+	case "P": // skip the confirm modal — start the whole-feature drain immediately
 		return m.dispatchParallel()
+	case "w": // work EXACTLY the selected dispatchable issues (bounded) and stop
+		if len(m.issueSelected) == 0 {
+			m.status = "select issues with space, then w to work exactly them"
+			return m, nil
+		}
+		return m.dispatchBounded()
 	case "m": // merge back the ready dispatched worktree branches (Round 2)
 		return m.mergeReady()
 	case "x": // prune orphaned dispatch worktrees (crashed/aborted, nothing live)
@@ -352,24 +358,44 @@ func dispatchableSet(sel []issues.Issue) (dispatchable []issues.Issue, skipped [
 	return dispatchable, skipped
 }
 
-// dispatchParallel spawns one isolated-worktree session per selected issue. It
-// leaves the single-issue Enter path untouched — this is batches only. It first
-// drops any non-dispatchable issues (resolved/blocked/claimed — see
-// dispatchableSet); those are never spawned even under force, since forcing
-// overrides the parallel-safety overlap check, not dispatchability. Unless force
-// is set it then checks the remaining set is mutually parallel-safe (disjoint
-// Touches, no blocking edge, known scope); an unsafe set is refused with a hint
-// to press capital P to override. Per-issue worktree failures are reported but
-// don't abort the rest of the batch.
+// dispatchParallel hands off a WHOLE-feature hands-off drain seeded by the
+// current selection (the p/P path). See dispatchDrain for the shared mechanics;
+// bounded is false here so the orchestrator re-scans for newly-ready siblings
+// until the whole feature is drained.
 func (m model) dispatchParallel() (tea.Model, tea.Cmd) {
+	return m.dispatchDrain(false)
+}
+
+// dispatchBounded hands off a BOUNDED drain of exactly the multi-selected
+// dispatchable issues (the w path): the orchestrator works only that set as
+// parallel-safe waves and stops — no newly-ready siblings. Shares dispatchDrain.
+func (m model) dispatchBounded() (tea.Model, tea.Cmd) {
+	return m.dispatchDrain(true)
+}
+
+// dispatchDrain is the shared launch for both hands-off drain keys. It runs the
+// /capataz-drain skill as ONE orchestrator (not one session per issue): the
+// skill claims each ready issue, works it via a capataz-work subagent in its own
+// worktree, merges the branch back, and (whole-feature mode) re-scans until the
+// backlog is drained. The selection seeds the drain and names the feature;
+// overlaps sequence into separate waves inside the loop, so there's no
+// parallel-safety gate to pass here.
+//
+// Non-dispatchable issues (resolved/blocked/claimed — see dispatchableSet) are
+// dropped before seeding; spawning a worktree agent on them just re-reads the
+// terminal/blocked file and stops.
+//
+// Launch = hand-to-current: when the client is attached to a managed session,
+// the prompt is reply()'d into that session's pane (like single-issue h), so the
+// drain runs as a subagent under an already-trusted claude — no fresh
+// --dangerously-skip-permissions process, no bypass-permissions screen, and the
+// work shows as ⊂N on that row. Only when no managed session is attached do we
+// fall back to spawning a fresh sidebar-backed session (governed by
+// Dispatch.SkipPermissions).
+func (m model) dispatchDrain(bounded bool) (tea.Model, tea.Cmd) {
 	all := m.selectedIssues()
 	if len(all) == 0 {
 		m.status = "select issues with space, then p to drain them hands-off"
-		return m, nil
-	}
-	if os.Getenv("TMUX") == "" {
-		m.status = "can't spawn: capataz isn't in tmux"
-		m.mode = modeNormal
 		return m, nil
 	}
 	sel, skipped := dispatchableSet(all)
@@ -380,12 +406,6 @@ func (m model) dispatchParallel() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// One hands-off orchestrator, not one session per issue: it runs the
-	// /capataz-drain skill, which claims each ready issue, works it via a
-	// capataz-work subagent in its own worktree, merges the branch back, and
-	// re-scans until the feature's backlog is drained. The selection seeds the
-	// drain and names the feature; overlaps sequence into separate waves inside
-	// the loop, so there's no parallel-safety gate to pass here anymore.
 	feature := sel[0].Feature
 	nums := make([]string, 0, len(sel))
 	for _, iss := range sel {
@@ -395,22 +415,65 @@ func (m model) dispatchParallel() (tea.Model, tea.Cmd) {
 		}
 		nums = append(nums, num)
 	}
+	prompt := drainPrompt(feature, nums, conf().Parallel.MaxConcurrency, bounded)
 
-	pane, err := newSessionWithSidebar("drain-"+feature, m.issueRepo, drainPrompt(feature, nums, conf().Parallel.MaxConcurrency))
-	if err != nil {
-		m.status = "drain session failed: " + err.Error()
-		m.mode = modeNormal
+	verb := "draining"
+	if bounded {
+		verb = "working"
+	}
+	base := fmt.Sprintf("%s %s (%s)", verb, feature, strings.Join(nums, ", "))
+	if len(skipped) > 0 {
+		base += fmt.Sprintf(", skipped %d not dispatchable (%s)", len(skipped), strings.Join(skipped, ", "))
+	}
+
+	m2, cmd := m.launchOrchestration("drain-"+feature, prompt, base)
+	if mm, ok := m2.(model); ok {
+		mm.issueSelected = nil // clear the selection after kicking off the drain
+		return mm, cmd
+	}
+	return m2, cmd
+}
+
+// launchOrchestration hands an orchestration prompt to the attached managed
+// session when there is one (reply into its live pane), else spawns a fresh
+// sidebar-backed session running the prompt. status is the success message
+// (a "; sent to <session>" / spawn note is appended). It always leaves the model
+// in modeNormal and dismisses the popup after acting, matching the "selecting
+// acts and quits" popup contract.
+func (m model) launchOrchestration(spawnName, prompt, status string) (tea.Model, tea.Cmd) {
+	m.mode = modeNormal
+	// Preferred path: hand to the attached managed session (no fresh flagged
+	// process; work shows as ⊂N on that row).
+	if pane, ok := m.attachedManagedPane(); ok {
+		if err := reply(pane, prompt); err != nil {
+			m.status = "hand-off failed: " + err.Error()
+			return m, nil
+		}
+		m.status = status + " — handed to the attached session"
+		if err := jump(pane); err != nil {
+			m.status = "sent but couldn't switch: " + err.Error()
+			return m, nil
+		}
+		if m.popup {
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 
-	m.issueSelected = nil // clear the selection after kicking off the drain
-	m.mode = modeNormal
-	m.status = fmt.Sprintf("draining %s (%s)", feature, strings.Join(nums, ", "))
-	if len(skipped) > 0 {
-		m.status += fmt.Sprintf(", skipped %d not dispatchable (%s)", len(skipped), strings.Join(skipped, ", "))
+	// Fallback: no attached managed session — spawn a fresh sidebar-backed
+	// session (governed by Dispatch.SkipPermissions inside newClaudeSession).
+	if os.Getenv("TMUX") == "" {
+		m.status = "can't spawn: capataz isn't in tmux (attach to a managed session to hand off)"
+		return m, nil
 	}
+	pane, err := newSessionWithSidebar(spawnName, m.issueRepo, prompt)
+	if err != nil {
+		m.status = "drain session failed: " + err.Error()
+		return m, nil
+	}
+	m.status = status + " — in a fresh session"
 	if err := jump(pane); err != nil {
-		m.status = "drain started but couldn't switch: " + err.Error()
+		m.status = "started but couldn't switch: " + err.Error()
 		return m, nil
 	}
 	if m.popup {
@@ -503,12 +566,27 @@ func worktreeDispatchPrompt(absIssuePath, branch string) string {
 	return fmt.Sprintf("Use the /capataz-work skill to work on the issue at %s. You are in an isolated git worktree on branch %s; commit your work on this branch when you resolve (git add -A && git commit) and do not merge — capataz merges it back later.", absIssuePath, branch)
 }
 
-// drainPrompt is the opening prompt for the single orchestrator session a
-// parallel dispatch spawns: it runs the /capataz-drain skill hands-off over a
-// feature's backlog, seeded with the selected issue numbers, and lets the skill
-// own the worktree/subagent/merge loop until the feature is drained.
-func drainPrompt(feature string, nums []string, maxConcurrency int) string {
-	return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain the %q feature's .scratch backlog, merging into this repo's current branch (the base). Start with these ready issues: %s. Then keep draining any sibling issues in the same feature that become ready as their blockers resolve, until none are left. Work each issue in its own git worktree via a capataz-work subagent, merge clean branches back, spawn a capataz-fix-conflict subagent on any conflict, and do not stop for confirmation. Run at most %d capataz-work subagents at once (max concurrency).", feature, strings.Join(nums, ", "), maxConcurrency)
+// drainPrompt is the opening prompt for the orchestrator a dispatch hands the
+// work to (the attached session, or a freshly-spawned one): it runs the
+// /capataz-drain skill over a feature's backlog and lets the skill own the
+// worktree/subagent/merge loop.
+//
+// It has two variants, distinguished by phrasing the capataz-drain skill keys
+// off (see its "Two modes" section):
+//
+//   - whole-feature (bounded == false): drain the entire feature backlog,
+//     starting from nums, re-scanning for newly-ready siblings until none
+//     remain — the historical p/P behavior.
+//   - bounded (bounded == true): work EXACTLY the enumerated issues as
+//     parallel-safe waves and stop; do not pull in newly-ready siblings — the
+//     new w behavior. nums here is the exact, exhaustive set.
+func drainPrompt(feature string, nums []string, maxConcurrency int, bounded bool) string {
+	common := "Work each issue in its own git worktree via a capataz-work subagent, merge clean branches back, spawn a capataz-fix-conflict subagent on any conflict, and do not stop for confirmation."
+	conc := fmt.Sprintf("Run at most %d capataz-work subagents at once (max concurrency).", maxConcurrency)
+	if bounded {
+		return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain issues from the %q feature's .scratch backlog, merging into this repo's current branch (the base). Work exactly issues %s; do not pull in newly-ready siblings; stop when these are resolved. %s %s", feature, strings.Join(nums, ", "), common, conc)
+	}
+	return fmt.Sprintf("Use the /capataz-drain skill to hands-off drain the %q feature's .scratch backlog, merging into this repo's current branch (the base). Start with these ready issues: %s. Then keep draining any sibling issues in the same feature that become ready as their blockers resolve, until none are left. %s %s", feature, strings.Join(nums, ", "), common, conc)
 }
 
 // repoWorktreeID builds a single filesystem-safe path segment that disambiguates
@@ -673,7 +751,7 @@ func (m model) issuesPopup(base string) string {
 		contentRows = 1
 	}
 
-	help := footerStyle.Render("↵ start work · space select · p run parallel · R review · S security · Esc close")
+	help := footerStyle.Render("↵ start work · space select · p drain feature · w work selected · R review · S security · Esc close")
 	if m.issueCursor >= 0 && m.issueCursor < len(m.issueList) {
 		if f := m.issueList[m.issueCursor].Feature; m.featureAllDone(f) {
 			help = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ "+f+" all resolved") +
@@ -1077,7 +1155,11 @@ func (m model) parallelConfirmPopup(base string) string {
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	skipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
-	head := fmt.Sprintf("Start a hands-off drain of %d of %d selected issue(s)?", len(dispatchable), len(sel))
+	feature := ""
+	if len(sel) > 0 {
+		feature = sel[0].Feature
+	}
+	head := fmt.Sprintf("Drain the ENTIRE %q backlog?", feature)
 	if len(dispatchable) == 0 {
 		head = warnStyle.Render("⚠ ") + "None dispatchable — nothing to drain"
 	} else if len(skipped) > 0 {
@@ -1098,15 +1180,17 @@ func (m model) parallelConfirmPopup(base string) string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", dimStyle.Render("  One orchestrator drains these (and their unblocked siblings) hands-off,"))
-	lines = append(lines, dimStyle.Render("  each via a capataz-work subagent in its own worktree."))
+	lines = append(lines, "", dimStyle.Render("  One orchestrator drains the WHOLE feature hands-off: it works the"))
+	lines = append(lines, dimStyle.Render("  selected issues AND any siblings that become ready as blockers resolve,"))
+	lines = append(lines, dimStyle.Render("  each via a capataz-work subagent in its own worktree, until none remain."))
+	lines = append(lines, dimStyle.Render("  (Use w to work only the selected issues and stop.)"))
 	if !safe {
 		lines = append(lines, dimStyle.Render("  Overlapping issues just run in separate waves — not a problem here."))
 	}
 	if len(skipped) > 0 && len(dispatchable) > 0 {
 		lines = append(lines, skipStyle.Render(fmt.Sprintf("  %d not dispatchable will be skipped.", len(skipped))))
 	}
-	foot := "  ↵ drain · Esc cancel"
+	foot := "  ↵ drain whole feature · Esc cancel"
 	if len(dispatchable) == 0 {
 		foot = "  Esc cancel (nothing to drain)"
 	}

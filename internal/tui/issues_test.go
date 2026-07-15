@@ -56,6 +56,44 @@ func TestWorktreeDispatchPromptShape(t *testing.T) {
 	}
 }
 
+// TestDrainPromptVariants pins the phrasing the capataz-drain skill keys off to
+// pick whole-feature vs. bounded mode. Both name the skill, feature, and the
+// seed numbers; the bounded variant must additionally forbid pulling in
+// siblings, and the whole-feature variant must invite them.
+func TestDrainPromptVariants(t *testing.T) {
+	whole := drainPrompt("login", []string{"01", "03"}, 4, false)
+	for _, want := range []string{
+		"/capataz-drain skill",
+		`"login"`,
+		"01, 03",
+		"max concurrency",
+		"become ready", // whole-feature invites newly-ready siblings
+	} {
+		if !strings.Contains(whole, want) {
+			t.Errorf("whole-feature prompt missing %q:\n%s", want, whole)
+		}
+	}
+	if strings.Contains(whole, "do not pull in newly-ready siblings") {
+		t.Errorf("whole-feature prompt must not forbid siblings:\n%s", whole)
+	}
+
+	bounded := drainPrompt("login", []string{"01", "03"}, 4, true)
+	for _, want := range []string{
+		"/capataz-drain skill",
+		`"login"`,
+		"Work exactly issues 01, 03",
+		"do not pull in newly-ready siblings",
+		"stop when these are resolved",
+	} {
+		if !strings.Contains(bounded, want) {
+			t.Errorf("bounded prompt missing %q:\n%s", want, bounded)
+		}
+	}
+	if strings.Contains(bounded, "become ready") {
+		t.Errorf("bounded prompt must not invite newly-ready siblings:\n%s", bounded)
+	}
+}
+
 // TestDispatchableSet checks the parallel-dispatch guard: only Bucket "todo"
 // issues are dispatchable; resolved/blocked/claimed are skipped with a
 // bucket-labeled reason, so dispatchParallel never spawns an agent on terminal
