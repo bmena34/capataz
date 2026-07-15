@@ -132,6 +132,15 @@ type model struct {
 
 // Run starts the dashboard. It blocks until the user quits.
 func Run() error {
+	// Launched from a plain terminal (not inside tmux): the dashboard can't switch
+	// panes or spawn sessions there, so bootstrap the operator into tmux instead —
+	// attach to an existing server, or create+attach a first session. Gate on
+	// $TMUX (not inTmux()) so a popup — which has $TMUX set but no $TMUX_PANE —
+	// still renders normally; the sidebar pane and `watch`/`tui` have $TMUX too.
+	if os.Getenv("TMUX") == "" {
+		return bootstrapOutsideTmux()
+	}
+
 	ti := textinput.New()
 	ti.Placeholder = "type your reply, Enter to send, Esc to cancel"
 	ti.Prompt = "" // we render our own "› " prompt

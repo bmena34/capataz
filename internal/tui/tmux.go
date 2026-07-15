@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -206,6 +207,75 @@ func killSession(name string) error {
 
 // inTmux reports whether capataz is running inside a tmux pane.
 func inTmux() bool { return os.Getenv("TMUX") != "" && os.Getenv("TMUX_PANE") != "" }
+
+// bootstrapOutsideTmux runs when `capataz` is launched from a plain terminal
+// (not inside tmux). The dashboard needs tmux to switch panes and spawn agent
+// sessions, so rather than render a half-working dashboard we get the operator
+// INTO tmux: attach to a running tmux server if one exists, otherwise ask for a
+// directory + session name, spawn a first claude session (with a sidebar), and
+// attach to it. Either way the returned process hands the terminal to tmux until
+// the operator detaches.
+func bootstrapOutsideTmux() error {
+	if tmuxHasSessions() {
+		return attachTmux("") // most-recently-used session
+	}
+	dir, name := promptDirAndName()
+	pane, err := newSessionWithSidebar(name, dir, "")
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	session, _, err := paneOrigin(pane)
+	if err != nil {
+		return fmt.Errorf("locate new session: %w", err)
+	}
+	return attachTmux(session)
+}
+
+// tmuxHasSessions reports whether a tmux server is running with at least one
+// session. A missing server (no sessions) makes list-sessions error out.
+func tmuxHasSessions() bool {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// attachTmux hands this terminal over to tmux, attaching to the named session
+// (or the most-recently-used one when session is empty). It inherits stdio so
+// tmux takes over the tty; it returns when the operator detaches.
+func attachTmux(session string) error {
+	args := []string{"attach-session"}
+	if session != "" {
+		args = append(args, "-t", "="+session)
+	}
+	cmd := exec.Command("tmux", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// promptDirAndName asks the operator (on stdin) for the directory and session
+// name of the first session to create when no tmux server is running yet. A
+// blank directory means home; a blank name defaults to the directory basename.
+func promptDirAndName() (dir, name string) {
+	r := bufio.NewReader(os.Stdin)
+	fmt.Println("No tmux session found — let's start one.")
+	fmt.Print("Directory for the new session (blank = home): ")
+	line, _ := r.ReadString('\n')
+	dir = strings.TrimSpace(line)
+	if dir == "" {
+		dir, _ = os.UserHomeDir()
+	} else {
+		dir = expandHome(dir)
+	}
+	fmt.Printf("Session name (blank = %s): ", sessionBase(dir))
+	line, _ = r.ReadString('\n')
+	name = strings.TrimSpace(line)
+	if name == "" {
+		name = sessionBase(dir)
+	}
+	return dir, name
+}
 
 // paneOrigin returns the tmux session name and window id containing a pane.
 func paneOrigin(pane string) (session, windowID string, err error) {

@@ -821,34 +821,104 @@ func (m model) issuePanelBody(rows int) string {
 		}
 	}
 
-	sorted := make([]issues.Issue, len(m.issueList))
-	copy(sorted, m.issueList)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return bucketOrder[issues.Bucket(sorted[i])] < bucketOrder[issues.Bucket(sorted[j])]
-	})
+	// Group by the folder each issue lives in (its feature), so the tracker reads
+	// as "here's what's happening in each feature" rather than one flat list —
+	// matching the feature-grouped prefix+g popup. Features are ordered
+	// attention-first (by their most-urgent issue) and issues within a feature the
+	// same way. Build header + row lines in that priority order, then cut to the
+	// row budget, folding the rest into a trailing "+N more".
+	groups := groupByFeature(m.issueList)
+	var flat []panelLine
+	for _, g := range groups {
+		flat = append(flat, panelLine{accentStyle.Bold(true).Render(g.name + "/"), false})
+		for _, iss := range g.issues {
+			flat = append(flat, panelLine{issueTrackerRow(iss), true})
+		}
+	}
 
 	avail := rows - len(lines) // header lines (summary + optional advisory) taken
 	if avail < 0 {
 		avail = 0
 	}
-	overflow := len(sorted) > avail
-	show := avail
-	if overflow {
-		show = avail - 1 // leave a row for the "+N more" hint
+	if len(flat) <= avail {
+		for _, l := range flat {
+			lines = append(lines, l.text)
+		}
+		return strings.Join(lines, "\n")
 	}
-	if show > len(sorted) {
-		show = len(sorted)
+	// Overflow: reserve the last row for the "+N more" hint, and never end on a
+	// dangling feature header (one whose rows all got cut).
+	budget := avail - 1
+	if budget < 0 {
+		budget = 0
 	}
-	if show < 0 {
-		show = 0
+	kept := flat[:budget]
+	for len(kept) > 0 && !kept[len(kept)-1].isIssue {
+		kept = kept[:len(kept)-1]
 	}
-	for i := 0; i < show; i++ {
-		lines = append(lines, issueTrackerRow(sorted[i]))
+	shownIssues := 0
+	for _, l := range kept {
+		lines = append(lines, l.text)
+		if l.isIssue {
+			shownIssues++
+		}
 	}
-	if overflow {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  … +%d more · prefix+g to work", len(sorted)-show)))
-	}
+	lines = append(lines, dimStyle.Render(fmt.Sprintf("  … +%d more · prefix+g to work", len(m.issueList)-shownIssues)))
 	return strings.Join(lines, "\n")
+}
+
+// panelLine is one rendered line of the sidebar tracker, tagged so the overflow
+// trim can distinguish issue rows (counted in "+N more") from feature headers
+// (never left dangling as the last kept line).
+type panelLine struct {
+	text    string
+	isIssue bool
+}
+
+// featureGroup is a feature (the folder its issues live in) with its issues.
+type featureGroup struct {
+	name   string
+	issues []issues.Issue
+}
+
+// groupByFeature buckets issues by feature, sorts each feature's issues
+// attention-first (issues.Bucket order), and orders the features themselves
+// attention-first by their most-urgent issue — so a feature with open work
+// floats above an all-done one. Stable within equal ranks for a steady display.
+func groupByFeature(list []issues.Issue) []featureGroup {
+	idx := map[string]int{}
+	var groups []featureGroup
+	for _, iss := range list {
+		i, ok := idx[iss.Feature]
+		if !ok {
+			i = len(groups)
+			idx[iss.Feature] = i
+			groups = append(groups, featureGroup{name: iss.Feature})
+		}
+		groups[i].issues = append(groups[i].issues, iss)
+	}
+	for gi := range groups {
+		g := &groups[gi]
+		sort.SliceStable(g.issues, func(a, b int) bool {
+			return bucketOrder[issues.Bucket(g.issues[a])] < bucketOrder[issues.Bucket(g.issues[b])]
+		})
+	}
+	sort.SliceStable(groups, func(a, b int) bool {
+		return groupRank(groups[a]) < groupRank(groups[b])
+	})
+	return groups
+}
+
+// groupRank is a feature's sort key: the bucketOrder of its most-urgent issue
+// (lower = more attention). An empty group ranks last.
+func groupRank(g featureGroup) int {
+	best := len(bucketOrder) + 1
+	for _, iss := range g.issues {
+		if r := bucketOrder[issues.Bucket(iss)]; r < best {
+			best = r
+		}
+	}
+	return best
 }
 
 // parallelSafeAdvisory returns a short, read-only advisory naming the ready
