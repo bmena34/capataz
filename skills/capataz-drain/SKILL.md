@@ -13,7 +13,17 @@ The dispatch prompt gives you:
 
 So you have: the **feature slug**, the **base branch** (this repo's current branch — you're in the primary checkout), a **seed set** of issue numbers, and optionally a **max-concurrency** cap (default to **3** if none is given).
 
-**This is fully autonomous.** Do not stop for confirmation between waves, before a merge, or after a conflict. The only reasons to stop are: the backlog is drained, or something is genuinely stuck and needs a human (record it and move on — don't wedge the loop).
+**This is fully autonomous.** Do not stop for confirmation between waves, before a merge, or after a conflict. The only reasons to stop are: your scope is drained, or something is genuinely stuck and needs a human (record it and move on — don't wedge the loop).
+
+## Two modes — whole-feature vs. bounded
+
+The dispatch prompt's phrasing selects one of two modes. They share **all** the per-issue mechanics (parallel-safe waves, worktree per issue, `capataz-work` subagent, merge-back, `capataz-fix-conflict` on conflict) — they differ **only** in what defines "done" and whether you re-scan for newly-ready siblings:
+
+- **Whole-feature mode (default).** The prompt says to **drain the whole feature** — e.g. "hands-off drain the `<feature>` backlog … keep draining any sibling issues that become ready as their blockers resolve, until none are left." You run the full loop below: scan → wave → merge → **re-scan** until a scan finds nothing ready. This is the historical behavior and is unchanged.
+
+- **Bounded mode.** The prompt enumerates an **exact, exhaustive** issue set and tells you to work only that set — e.g. "work exactly issues `NN, NN`; do not pull in newly-ready siblings; stop when these are resolved." You run the same waves over **only** the enumerated issues, and **stop when every issue in that set is `resolved`** (or genuinely stuck). You **do not re-scan** the feature for newly-ready siblings, and you never pick up an issue that isn't in the enumerated set — even if its blockers resolve and it becomes ready mid-drain.
+
+If the prompt gives a seed set but says to keep draining siblings until none remain, that's **whole-feature** (the seed is just a starting point). Only treat it as **bounded** when the prompt is explicit that the enumerated set is exhaustive and forbids pulling in newly-ready siblings ("do not pull in newly-ready siblings" / "work exactly these" / "stop when these are resolved"). When in doubt, prefer whole-feature. The TUI's `drainPrompt` emits the matching phrasing for whichever mode the operator selected.
 
 ## The backlog format (recap)
 
@@ -21,13 +31,13 @@ Issues live at `.scratch/<feature>/issues/NN-<slug>.md` with header lines `Statu
 
 ## Process — the loop
 
-Repeat until a scan finds no ready issues:
+Repeat until you have no more ready issues **in scope** (whole feature, or the enumerated set in bounded mode):
 
 ### 1. Scan for the ready wave
 
-Read every issue file under `.scratch/<feature>/issues/`. Select the ones that are `ready-for-agent` with all `Blocked by` resolved. From those, pick a **parallel-safe wave**: greedily take ready issues whose `Touches` are pairwise disjoint, up to the **max-concurrency** cap. Issues that overlap the ones you picked simply wait for a later wave — that's how overlaps serialize safely.
+Read every issue file under `.scratch/<feature>/issues/`. Select the ones that are `ready-for-agent` with all `Blocked by` resolved. **In bounded mode, first restrict to the enumerated issue set** — ignore any file whose number isn't in the set, even if it's ready. From those, pick a **parallel-safe wave**: greedily take ready issues whose `Touches` are pairwise disjoint, up to the **max-concurrency** cap. Issues that overlap the ones you picked simply wait for a later wave — that's how overlaps serialize safely.
 
-If nothing is ready but issues remain `claimed`/blocked, you're done (see step 5).
+If nothing in scope is ready but in-scope issues remain `claimed`/blocked, you're done (see step 5).
 
 ### 2. Dispatch the wave — one capataz-work subagent per issue, each in its own worktree
 
@@ -63,17 +73,20 @@ Wait for the wave's subagents to finish. For each issue, check its `Status`:
 
 Merge one branch at a time so conflicts are attributable.
 
-### 4. Re-scan
+### 4. Re-scan (whole-feature mode) / next wave (bounded mode)
 
-Go back to step 1. Issues whose blockers you just resolved are now ready and will be picked up in the next wave. The loop naturally walks the dependency graph wave by wave.
+**Whole-feature mode:** go back to step 1 and re-scan the whole feature. Issues whose blockers you just resolved are now ready and will be picked up in the next wave. The loop naturally walks the dependency graph wave by wave until nothing is left.
+
+**Bounded mode:** go back to step 1 but keep the scope pinned to the enumerated set — you're only draining the next parallel-safe wave *of that set*. Do **not** pull in newly-ready siblings outside the set, even if resolving an in-set issue unblocked them. Stop once every enumerated issue is `resolved` (or stuck — see step 5). The only difference from whole-feature mode is this scope pin; the mechanics of each wave are identical.
 
 ### 5. Report
 
-When a scan finds nothing ready, stop and print a summary:
+When you have no more ready issues in scope, stop and print a summary:
 
 - Which issues **drained** (worked + merged), in order.
 - Any **conflicts** hit and that a `capataz-fix-conflict` subagent resolved them.
 - Anything left **needs-info / blocked / skipped**, and why — these need a human.
+- In bounded mode, state that the enumerated set is complete (and, if any in-set issue is stuck, which). Do not report on out-of-set siblings — they're out of scope by design.
 
 ## Resumability
 
@@ -83,4 +96,5 @@ If you're re-launched on a backlog that's partly done, just start the loop: `res
 
 - **Don't implement issues in your own thread** — always delegate to a `capataz-work` subagent, so your context stays thin and the drain scales.
 - **Don't nest merges or start unrelated ones** — you merge only this feature's branches, one at a time.
-- **Don't stop for confirmation.** Autonomous means autonomous. Stop only when drained or when reporting genuinely stuck issues.
+- **Don't stop for confirmation.** Autonomous means autonomous. Stop only when your scope is drained or when reporting genuinely stuck issues.
+- **In bounded mode, respect the bound.** Never work an issue that isn't in the enumerated set, and never re-scan for newly-ready siblings. The set is exhaustive by contract; pulling in extras defeats the operator's selection.

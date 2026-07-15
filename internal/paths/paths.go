@@ -60,6 +60,10 @@ func ClaudeConfigJSON() string { return filepath.Join(home(), ".claude.json") }
 // its native skills here.
 func ClaudeSkillsDir() string { return filepath.Join(home(), ".claude", "skills") }
 
+// ClaudeAgentsDir is where Claude Code loads user subagent definitions from.
+// capataz installs its native per-role agent defs here.
+func ClaudeAgentsDir() string { return filepath.Join(home(), ".claude", "agents") }
+
 // Plist is the launchd agent plist path.
 func Plist() string {
 	return filepath.Join(home(), "Library", "LaunchAgents", launchdLabel+".plist")

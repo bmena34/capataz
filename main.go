@@ -50,10 +50,10 @@ func main() {
 		os.Exit(0)
 	case "install":
 		logging.SetComponent("install")
-		run(func() error { return install.Install(skillsSub()) })
+		run(func() error { return install.Install(skillsSub(), agentsSub()) })
 	case "uninstall":
 		logging.SetComponent("install")
-		run(func() error { return install.Uninstall(skillsSub()) })
+		run(func() error { return install.Uninstall(skillsSub(), agentsSub()) })
 	case "start":
 		logging.SetComponent("install")
 		run(install.Start)
@@ -128,6 +128,17 @@ func main() {
 // somehow unreadable, which makes install/uninstall skip skills rather than fail.
 func skillsSub() fs.FS {
 	sub, err := fs.Sub(skillsFS, "skills")
+	if err != nil {
+		return nil
+	}
+	return sub
+}
+
+// agentsSub returns the embedded agents tree rooted at the agent directories
+// (so its top-level entries are the agent names). Returns nil if the embed is
+// somehow unreadable, which makes install/uninstall skip agents rather than fail.
+func agentsSub() fs.FS {
+	sub, err := fs.Sub(agentsFS, "agents")
 	if err != nil {
 		return nil
 	}

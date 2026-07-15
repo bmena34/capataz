@@ -44,10 +44,11 @@ func specs() []hookSpec {
 // remove only ours and re-installs don't duplicate.
 const marker = "capataz hook"
 
-// Install wires up hooks, the native skills, and the launchd agent. skills is
-// the embedded skills tree (rooted at the skill directories); a nil FS skips
-// skill installation.
-func Install(skills fs.FS) error {
+// Install wires up hooks, the native skills, the per-role agent defs, and the
+// launchd agent. skills is the embedded skills tree (rooted at the skill
+// directories) and agents is the embedded agents tree (rooted at the agent
+// directories); a nil FS skips that installation step.
+func Install(skills, agents fs.FS) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
@@ -84,15 +85,26 @@ func Install(skills fs.FS) error {
 		}
 	}
 
+	// Agents are a convenience layer too — same never-abort posture as skills.
+	if agents != nil {
+		installed, err := installAgents(agents)
+		if err != nil {
+			fmt.Printf("! some agents could not be installed (continuing): %v\n", err)
+		}
+		if len(installed) > 0 {
+			fmt.Printf("✓ agents installed to %s (%s)\n", paths.ClaudeAgentsDir(), strings.Join(installed, ", "))
+		}
+	}
+
 	fmt.Println("\nDone. New Claude Code sessions in tmux will appear in `capataz`.")
 	fmt.Println("Note: hooks load at session start, so restart any sessions already running.")
 	return nil
 }
 
-// Uninstall removes capataz hooks, native skills, and the launchd agent. skills
-// is the embedded skills tree, used to know which skill directories are ours to
-// remove; a nil FS skips skill removal.
-func Uninstall(skills fs.FS) error {
+// Uninstall removes capataz hooks, native skills, per-role agent defs, and the
+// launchd agent. skills and agents are the embedded trees, used to know which
+// directories are ours to remove; a nil FS skips that removal step.
+func Uninstall(skills, agents fs.FS) error {
 	if err := unwireSettings(); err != nil {
 		return fmt.Errorf("unwire settings.json: %w", err)
 	}
@@ -103,6 +115,14 @@ func Uninstall(skills fs.FS) error {
 			fmt.Printf("! could not remove skills: %v\n", err)
 		} else if len(removed) > 0 {
 			fmt.Printf("✓ skills removed from %s (%s)\n", paths.ClaudeSkillsDir(), strings.Join(removed, ", "))
+		}
+	}
+
+	if agents != nil {
+		if removed, err := uninstallAgents(agents); err != nil {
+			fmt.Printf("! could not remove agents: %v\n", err)
+		} else if len(removed) > 0 {
+			fmt.Printf("✓ agents removed from %s (%s)\n", paths.ClaudeAgentsDir(), strings.Join(removed, ", "))
 		}
 	}
 
@@ -183,6 +203,59 @@ func uninstallSkills(skills fs.FS) ([]string, error) {
 		}
 	}
 	return removed, nil
+}
+
+// installAgents copies each top-level agent directory in the embedded tree into
+// ~/.claude/agents/<name>, overwriting our own prior copies. Same partial-
+// success contract as installSkills: a failure on one agent does not stop the
+// others, and only capataz's own agent directories are touched — any other user
+// agents are left alone. It reuses installSkill (a generic copy-then-swap).
+func installAgents(agents fs.FS) ([]string, error) {
+	names, err := agentNames(agents)
+	if err != nil {
+		return nil, err
+	}
+	dest := paths.ClaudeAgentsDir()
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return nil, err
+	}
+	var installed []string
+	var firstErr error
+	for _, name := range names {
+		if err := installSkill(agents, name, dest); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		installed = append(installed, name)
+	}
+	return installed, firstErr
+}
+
+// uninstallAgents removes the agent directories capataz installed. It returns
+// the names actually present and removed.
+func uninstallAgents(agents fs.FS) ([]string, error) {
+	names, err := agentNames(agents)
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, name := range names {
+		target := filepath.Join(paths.ClaudeAgentsDir(), name)
+		if _, err := os.Stat(target); err == nil {
+			if err := os.RemoveAll(target); err != nil {
+				return removed, err
+			}
+			removed = append(removed, name)
+		}
+	}
+	return removed, nil
+}
+
+// agentNames lists the top-level agent directory names in the embedded tree.
+func agentNames(agents fs.FS) ([]string, error) {
+	return skillNames(agents)
 }
 
 // skillNames lists the top-level skill directory names in the embedded tree.
