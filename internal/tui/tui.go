@@ -815,6 +815,18 @@ func (m model) handleKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "quit failed: " + err.Error()
 			return m, nil
 		}
+		// Remove the row immediately so the operator sees it gone at once,
+		// before the 4-second grace period for the window teardown.
+		m.remove(s.ID)
+		m.resort()
+		// Hard-delete from the daemon store and broadcast a "remove" so the
+		// session never reappears as a "Resumable" entry in any dashboard.
+		// Best-effort: if the daemon is temporarily unreachable the row is
+		// already gone from this dashboard; it may briefly reappear in others
+		// until the next push, but the window teardown will have removed the pane.
+		if err := dismissSession(s.ID); err != nil {
+			logging.Infof("dismiss after quit: %v", err)
+		}
 		m.status = "killing " + m.label(s) + "…"
 		return m, killFallback(window, s.ID)
 	default: // n, esc, or any other key cancels
