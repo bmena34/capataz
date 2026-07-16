@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  A terminal dashboard for supervising your <a href="https://claude.com/claude-code">Claude&nbsp;Code</a> agents in tmux —<br>
-  it surfaces which agent needs you and lets you switch to, reply to, rename, or kill any session.
+  A terminal dashboard that supervises your <a href="https://claude.com/claude-code">Claude&nbsp;Code</a> agents in tmux.<br>
+  It surfaces which agent needs your attention and puts you there in one keystroke.
 </p>
 
 <p align="center">
@@ -57,17 +57,57 @@ Keys inside the dashboard:
 | Key | Action |
 |-----|--------|
 | `j` / `k`, arrows | move selection |
-| `Enter` | switch to the selected session |
+| `gg` / `G` | top / bottom |
+| `Ctrl+d` / `Ctrl+u` | half-page down / up |
+| `Enter` / `o` | switch to the selected session (or resume a recoverable one) |
 | `n` | new session |
 | `r` | quick reply without leaving the dashboard |
 | `c` | conversation view |
-| `R` | rename the session |
-| `i` | issues — full-screen backlog for the selected repo (use from the `prefix+g` popup) |
-| `space` / `p` / `m` | (in issues) multi-select · start a hands-off drain of the selected issues · merge resolved branches back |
+| `d` | peek at the session detail without switching |
 | `l` | event log |
-| `x` | quit a session (graceful, with confirm) |
-| `?` | full keybinding help |
-| `q` | close the dashboard |
+| `R` | rename the session |
+| `x` | quit the selected session (graceful, with confirm); on a recoverable row — dismiss it |
+| `i` | open the full-screen issue backlog for the selected repo |
+| `?` | toggle keyboard shortcut help |
+| `q` / `Esc` | close the dashboard |
+
+Keys inside the **issue view** (`i`):
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, arrows | move selection |
+| `Enter` / `o` | start work on the selected issue |
+| `space` | toggle multi-select |
+| `p` | show confirm modal then drain the selected issues hands-off |
+| `P` | skip confirm and drain the whole feature immediately |
+| `w` | work exactly the selected issues (bounded drain, then stop) |
+| `R` | fresh-context correctness review of the feature |
+| `S` | fresh-context OWASP security review of the feature |
+| `M` | pick a model override for the next dispatch |
+| `m` | merge resolved dispatch branches back into the base |
+| `x` | prune orphaned dispatch worktrees |
+| `?` | shortcuts help |
+| `q` / `Esc` | return to the session list |
+
+**Quit behavior.** When you quit a session from the dashboard (`x` → confirm `y`), the row disappears immediately and the session is hard-deleted from the daemon — it will not reappear. The graceful `/quit` signal and window teardown happen in the background. If a session's process dies *without* an operator quit — tmux-server restart, reboot, crash — the daemon retains it as a **recoverable** row. Press `Enter` on a recoverable row to resume the session via `claude --resume` in the original working directory.
+
+## First run
+
+After installing, here is the end-to-end path for your first five minutes:
+
+1. **Open a tmux session** (or use one you already have).
+2. **Bind the keys** if you have not already:
+   ```sh
+   capataz keybind        # prefix+g → popup
+   capataz keybind attach # prefix+a → sidebar
+   capataz keybind nav    # Ctrl+h/j/k/l → move between panes
+   ```
+   Each command prints the lines to add to `~/.tmux.conf` for permanence, and applies them live immediately.
+3. **Press `prefix+g`** inside tmux. The popup switcher opens. It will be empty — that is fine.
+4. **Press `n`** inside the popup to spawn a new Claude Code session. Enter a directory (`~` or any project root) and a name, then hit `Enter`. A new tmux window opens with Claude Code and a sidebar docked to it.
+5. **Interact with Claude** in that window. You will see its status update in the sidebar in real time: `working`, `waiting`, `needs you`.
+6. **Switch back to the popup** (`prefix+g`) at any point. Your session appears in the list with its current status and last event. Press `Enter` to jump to it, `r` to quick-reply without leaving, or `i` to open its issue backlog.
+7. **Quit a session** with `x` (confirm with `y`) from the dashboard. It disappears immediately. If tmux or your Mac reboots and Claude's process dies unexpectedly, the session reappears as a recoverable row — press `Enter` on it to resume via `claude --resume`.
 
 ## How it works
 
@@ -162,19 +202,62 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
 ## Commands
 
 ```
-capataz                open the dashboard
-capataz popup          open the dashboard in a tmux popup (switcher)
-capataz attach         dock a dashboard sidebar in the current tmux window
-capataz keybind [k]    bind prefix+k (default g) to the popup; also `attach` / `nav`
-capataz statusline     show a "needs you" badge in tmux (off to remove)
-capataz config         print the config file path + contents
-capataz issue …        claim/resolve/status/comment/list/new local .scratch issues (used by skills)
-capataz install        wire hooks, install skills + start the daemon
-capataz uninstall      remove hooks, skills + stop the daemon
-capataz status         show agent + daemon state
-capataz logs           print the application log
-capataz quit           stop running dashboards
+capataz                        open the dashboard
+capataz popup                  open the dashboard in a tmux popup (switcher mode)
+capataz attach                 dock a dashboard sidebar in the current tmux window
+capataz keybind [k]            bind prefix+k (default g) to summon the popup
+capataz keybind attach [k]     bind prefix+k (default a) to attach a sidebar
+capataz keybind nav            bind Ctrl+h/j/k/l pane nav (nvim-aware)
+capataz statusline             show a "needs you" badge in tmux (off to remove)
+capataz config                 print the config file path + contents (~/.config/capataz)
+capataz issue …                claim/resolve/status/comment/list/new local .scratch issues (used by skills)
+capataz install                wire hooks, install skills + start the daemon
+capataz uninstall              remove hooks, skills + stop the daemon
+capataz start                  start the daemon
+capataz stop                   stop the daemon (no respawn)
+capataz restart                restart the daemon
+capataz status                 show agent + daemon state
+capataz logs                   print the application log
+capataz quit                   stop a running dashboard process
+capataz daemon                 run the daemon in the foreground (used by launchd)
+capataz version                print version
 ```
+
+## Troubleshooting
+
+**Daemon not running / dashboard shows no sessions**
+
+```sh
+capataz status           # check whether the daemon is alive
+capataz logs             # print the application log
+tail -f ~/.capataz/capataz.log   # follow the log live
+CAPATAZ_DEBUG=1 capataz  # run the dashboard with verbose logging
+```
+
+If `capataz status` shows the daemon is stopped, run `capataz start` (or `capataz install` if you have not set it up yet). The daemon is managed by `launchd` and respawns automatically after a crash or reboot; if it stays stopped, check `capataz logs` for startup errors.
+
+**Hooks not firing / sessions not appearing in the dashboard**
+
+Hooks are wired into `~/.claude/settings.json` by `capataz install`. They load when a Claude session starts, not dynamically — so after running `capataz install`, you must **restart any Claude Code sessions** you already have open.
+
+**Sidebar disappeared**
+
+The sidebar is a Bubble Tea TUI running in a tmux pane. If it crashes (a render panic), the pane closes and the sidebar disappears. Re-attach it with `prefix+a` (`capataz keybind attach` to bind this if you have not already). If panics recur, check `capataz logs` and file a bug.
+
+**Keybinds not working**
+
+Run the `capataz keybind` commands from the Install section again — they apply bindings live and print the `~/.tmux.conf` lines for permanence. If you reloaded your tmux config manually, the live bindings may have been wiped; rerun them.
+
+**launchd daemon PATH issues (tmux not found)**
+
+The `launchd` plist bakes in your PATH at install time. If you install tmux or Homebrew after running `capataz install`, re-run `capataz install` to bake the updated PATH into the plist.
+
+## Known limitations / beta caveats
+
+- **macOS only.** `capataz` uses the macOS Keychain (`security`) and `launchd`. It does not run on Linux or Windows.
+- **tmux only.** Only Claude Code sessions running inside tmux panes are tracked. Sessions in bare terminals or other multiplexers are invisible to the daemon.
+- **Usage gauge is unofficial.** The plan usage bars read your OAuth token from the Keychain and call the same internal endpoint Claude Code's `/usage` uses. This is undocumented and may break without notice. You can disable it with `"usage": { "enabled": false }` in your config, or update `url` / `keychain_service` if Anthropic changes them.
+- **Early beta.** Rough edges exist. If something breaks, `capataz logs` and `CAPATAZ_DEBUG=1` are your friends.
 
 ## Uninstall
 
