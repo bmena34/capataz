@@ -1143,8 +1143,8 @@ var (
 	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Bold(true)
 	okDot         = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("●")
 	badDot        = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("●")
-	// resumableStyle dims the "(resumable)" hint on ended rows — present but quiet,
-	// signalling Enter revives the row without shouting for attention.
+	// resumableStyle dims the "(↵ resume)" hint on retained rows — present but
+	// quiet, signalling Enter revives the row without shouting for attention.
 	resumableStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true)
 )
 
@@ -1165,7 +1165,11 @@ func badge(s proto.State) string {
 	case proto.StateDone:
 		label, color = "done", "42"
 	default:
-		label, color = "ended", "240"
+		// StateEnded rows are retained precisely so they can be brought back
+		// (Enter → claude --resume), so badge them by what they offer, not how
+		// they got here — "ended" next to a Resumable panel title read as a
+		// contradiction.
+		label, color = "resumable", "240"
 	}
 	st := lipgloss.NewStyle().Foreground(color)
 	if s.NeedsYou() {
@@ -1383,7 +1387,7 @@ func (m model) detailBodyFor(sel proto.Session, innerW, rows int) string {
 	head := badge(sel.State) + dimStyle.Render("  "+orDash(sel.TmuxPane)+" · "+age(sel.LastChange))
 	if sel.State == proto.StateEnded {
 		// Make it clear the row isn't dead weight: Enter brings it back.
-		head += resumableStyle.Render("  (resumable · ↵)")
+		head += resumableStyle.Render("  (↵ to resume)")
 	}
 	b.WriteString(head + "\n")
 	b.WriteString(dimStyle.Render(truncate(sel.Cwd, innerW)) + "\n")
@@ -1499,9 +1503,10 @@ func (m model) listBody(group []proto.Session, innerW int, needsPanel bool) stri
 		}
 		base := fmt.Sprintf("%s%s %-12s %4s ", mark, badge(s.State), truncate(lbl, 12), age(s.LastChange))
 		if s.State == proto.StateEnded {
-			// A retained row: cue that Enter brings it back. Kept short so it fits
-			// the narrow sidebar and doesn't disturb column alignment.
-			base += resumableStyle.Render("(resumable)")
+			// A retained row: the badge already says "resumable", so the trailing
+			// hint carries the action — Enter brings it back. Kept short so it
+			// fits the narrow sidebar and doesn't disturb column alignment.
+			base += resumableStyle.Render("(↵ resume)")
 		}
 		cw := innerW - 6 // leave 5 for ctx + 1 for the prefix
 		if cw < 1 {
