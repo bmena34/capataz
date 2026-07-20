@@ -59,14 +59,14 @@ Keys inside the dashboard:
 | `j` / `k`, arrows | move selection |
 | `gg` / `G` | top / bottom |
 | `Ctrl+d` / `Ctrl+u` | half-page down / up |
-| `Enter` / `o` | switch to the selected session (or resume a recoverable one) |
+| `Enter` / `o` | switch to the selected session (or resume it if it ended) |
 | `n` | new session |
 | `r` | quick reply without leaving the dashboard |
 | `c` | conversation view |
 | `d` | peek at the session detail without switching |
 | `l` | event log |
 | `R` | rename the session |
-| `x` | quit the selected session (graceful, with confirm); on a recoverable row — dismiss it |
+| `x` | quit the selected session (graceful, with confirm); on a resumable row — dismiss it |
 | `i` | open the full-screen issue backlog for the selected repo |
 | `?` | toggle keyboard shortcut help |
 | `q` / `Esc` | close the dashboard |
@@ -89,7 +89,9 @@ Keys inside the **issue view** (`i`):
 | `?` | shortcuts help |
 | `q` / `Esc` | return to the session list |
 
-**Quit behavior.** When you quit a session from the dashboard (`x` → confirm `y`), the row disappears immediately and the session is hard-deleted from the daemon — it will not reappear. The graceful `/quit` signal and window teardown happen in the background. If a session's process dies *without* an operator quit — tmux-server restart, reboot, crash — the daemon retains it as a **recoverable** row. Press `Enter` on a recoverable row to resume the session via `claude --resume` in the original working directory.
+**Quit behavior.** When you quit a session from the dashboard (`x` → confirm `y`), the row disappears immediately and the session is hard-deleted from the daemon — it will not reappear. The graceful `/quit` signal and window teardown happen in the background. If a session's process dies *without* an operator quit — tmux-server restart, reboot, crash — the daemon retains it as a **resumable** row. Press `Enter` on a resumable row to resume the session via `claude --resume` in the original working directory.
+
+**After a reboot**, just run `capataz` from a plain terminal: when no tmux server is running it resumes your most recently active resumable session and attaches you to it, dropping you straight back into your work. The rest of your sessions wait in the sidebar's *Resumable* panel, one `Enter` away each. Set `"resume": { "auto_attach": false }` in the config to get the new-session prompt instead.
 
 ## First run
 
@@ -107,7 +109,7 @@ After installing, here is the end-to-end path for your first five minutes:
 4. **Press `n`** inside the popup to spawn a new Claude Code session. Enter a directory (`~` or any project root) and a name, then hit `Enter`. A new tmux window opens with Claude Code and a sidebar docked to it.
 5. **Interact with Claude** in that window. You will see its status update in the sidebar in real time: `working`, `waiting`, `needs you`.
 6. **Switch back to the popup** (`prefix+g`) at any point. Your session appears in the list with its current status and last event. Press `Enter` to jump to it, `r` to quick-reply without leaving, or `i` to open its issue backlog.
-7. **Quit a session** with `x` (confirm with `y`) from the dashboard. It disappears immediately. If tmux or your Mac reboots and Claude's process dies unexpectedly, the session reappears as a recoverable row — press `Enter` on it to resume via `claude --resume`.
+7. **Quit a session** with `x` (confirm with `y`) from the dashboard. It disappears immediately. If tmux or your Mac reboots and Claude's process dies unexpectedly, the session reappears as a resumable row — press `Enter` on it to resume via `claude --resume`.
 
 ## How it works
 
@@ -187,11 +189,14 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
     "plan_type": ""
   },
   "sidebar": { "width": 40 },
-  "review": { "sanity_check": false }
+  "review": { "sanity_check": false },
+  "resume": { "max_retained": 20, "auto_attach": true }
 }
 ```
 
 `review.sanity_check` (default `false`) turns on the per-issue sanity-check subagent described above; the full fresh review is always available via `R`.
+
+`resume.max_retained` caps how many ended sessions are kept as resumable rows. `resume.auto_attach` (default `true`) makes bare `capataz` resume your most recently active resumable session when no tmux server is running (e.g. after a reboot); set it `false` to always get the new-session prompt instead.
 
 > **Note on the usage gauge.** To show your plan usage (current-session and weekly %), `capataz` reads your Claude Code OAuth token from the macOS Keychain and calls `api/oauth/usage` — the **same endpoint Claude Code's `/usage` uses**. This is *unofficial* and undocumented: it may change or stop working at any time. It only ever reads *your* token to display *your* usage; nothing is sent anywhere else. Set `usage.enabled` to `false` to turn it off entirely, or update `url` / `keychain_service` if Anthropic changes them.
 >

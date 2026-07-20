@@ -27,6 +27,13 @@ type Resume struct {
 	// MaxRetained caps how many ended sessions the daemon keeps persisted (the
 	// most-recent by last_change). Older ended rows are trimmed. Default 20.
 	MaxRetained int `json:"max_retained"`
+	// AutoAttach controls what bare `capataz` does from a plain terminal when no
+	// tmux server is running (a fresh boot / killed server). True resumes the
+	// most recently active retained session and attaches to it — "return to my
+	// work" — leaving the other retained rows one Enter away in the sidebar.
+	// False (or nothing retained) falls back to the first-session prompt.
+	// Default true.
+	AutoAttach bool `json:"auto_attach"`
 }
 
 // Models routes a model alias to each dispatched agent role, so heavier reasoning
@@ -154,7 +161,7 @@ func Default() Config {
 		Sidebar:  Sidebar{Width: 40},
 		Dispatch: Dispatch{SkipPermissions: true},
 		Parallel: Parallel{MaxConcurrency: 3},
-		Resume:   Resume{MaxRetained: 20},
+		Resume:   Resume{MaxRetained: 20, AutoAttach: true},
 		Models: Models{
 			Implementer:  "sonnet",
 			Reviewer:     "opus",

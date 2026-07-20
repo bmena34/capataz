@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"net"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -62,6 +63,34 @@ func dismissSession(id string) error {
 	}
 	defer conn.Close()
 	return json.NewEncoder(conn).Encode(proto.Msg{Type: "dismiss", SessionID: id})
+}
+
+// retainedSessions returns the daemon's retained (ended, resumable) sessions,
+// most recently active first. A one-shot dial: subscribe, read the initial
+// snapshot push, hang up. Returns nil when the daemon is unreachable or slow —
+// callers treat that as "nothing to resume" rather than blocking startup.
+func retainedSessions() []proto.Session {
+	conn, err := net.DialTimeout("unix", paths.Sock(), time.Second)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := json.NewEncoder(conn).Encode(proto.Msg{Type: "subscribe"}); err != nil {
+		return nil
+	}
+	var p proto.Push
+	if err := json.NewDecoder(conn).Decode(&p); err != nil {
+		return nil
+	}
+	var ended []proto.Session
+	for _, s := range p.Sessions {
+		if s.State == proto.StateEnded && s.ID != "" {
+			ended = append(ended, s)
+		}
+	}
+	sort.Slice(ended, func(i, j int) bool { return ended[i].LastChange > ended[j].LastChange })
+	return ended
 }
 
 // waitForMsg yields the next message from the listen goroutine's channel.

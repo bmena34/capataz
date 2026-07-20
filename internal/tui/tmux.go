@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -219,7 +218,19 @@ func bootstrapOutsideTmux() error {
 	if tmuxHasSessions() {
 		return attachTmux("") // most-recently-used session
 	}
-	dir, name := promptDirAndName()
+	// No tmux server (fresh boot / killed server). Before asking the operator to
+	// create a brand-new session, put them back into their work: resume the most
+	// recently active retained conversation and attach to it. The rest of the
+	// retained rows stay one Enter away in the sidebar's Resumable panel.
+	if conf().Resume.AutoAttach {
+		if session, ok := resumeMostRecent(); ok {
+			return attachTmux(session)
+		}
+	}
+	dir, name, err := promptDirAndName()
+	if err != nil {
+		return nil // operator cancelled the prompt — create nothing
+	}
 	pane, err := newSessionWithSidebar(name, dir, "", "")
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -229,6 +240,33 @@ func bootstrapOutsideTmux() error {
 		return fmt.Errorf("locate new session: %w", err)
 	}
 	return attachTmux(session)
+}
+
+// resumeMostRecent resumes the most recently active retained session (sidebar
+// included) and returns the tmux session name to attach to. ok=false — daemon
+// unreachable, nothing retained, or the resume itself failed — sends the
+// caller to the first-session prompt instead.
+func resumeMostRecent() (string, bool) {
+	retained := retainedSessions()
+	if len(retained) == 0 {
+		return "", false
+	}
+	s := retained[0]
+	name := s.Name
+	if name == "" {
+		name = sessionBase(s.Cwd)
+	}
+	fmt.Printf("Resuming %s …\n", name)
+	pane, err := resumeSessionWithSidebar(name, s.Cwd, s.ID)
+	if err != nil {
+		fmt.Printf("resume failed (%v) — starting fresh.\n", err)
+		return "", false
+	}
+	session, _, err := paneOrigin(pane)
+	if err != nil {
+		return "", true // session exists but can't be named: attach most-recent
+	}
+	return session, true
 }
 
 // tmuxHasSessions reports whether a tmux server is running with at least one
@@ -252,29 +290,6 @@ func attachTmux(session string) error {
 	cmd := exec.Command("tmux", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
-}
-
-// promptDirAndName asks the operator (on stdin) for the directory and session
-// name of the first session to create when no tmux server is running yet. A
-// blank directory means home; a blank name defaults to the directory basename.
-func promptDirAndName() (dir, name string) {
-	r := bufio.NewReader(os.Stdin)
-	fmt.Println("No tmux session found — let's start one.")
-	fmt.Print("Directory for the new session (blank = home): ")
-	line, _ := r.ReadString('\n')
-	dir = strings.TrimSpace(line)
-	if dir == "" {
-		dir, _ = os.UserHomeDir()
-	} else {
-		dir = expandHome(dir)
-	}
-	fmt.Printf("Session name (blank = %s): ", sessionBase(dir))
-	line, _ = r.ReadString('\n')
-	name = strings.TrimSpace(line)
-	if name == "" {
-		name = sessionBase(dir)
-	}
-	return dir, name
 }
 
 // paneOrigin returns the tmux session name and window id containing a pane.
