@@ -3,49 +3,151 @@
 </p>
 
 <p align="center">
-  A terminal dashboard that supervises your <a href="https://claude.com/claude-code">Claude&nbsp;Code</a> agents in tmux.<br>
-  It surfaces which agent needs your attention and puts you there in one keystroke.
+  An opinionated tmux workflow for shipping software with <a href="https://claude.com/claude-code">Claude&nbsp;Code</a> agents.<br>
+  Plan a feature, split it into issues, drain the backlog with parallel agents in isolated worktrees,<br>
+  review it with fresh eyes — and always know which agent needs you.
 </p>
 
 <p align="center">
   <img src="docs/screenshot.png" alt="capataz dashboard docked beside a live Claude Code session" width="820">
 </p>
 
+*Capataz* is Spanish for **foreman**: it runs the crew so you can run the job.
+
 ## Why
 
-When you run several Claude Code agents at once, it's hard to tell which one is blocked on you. `capataz` watches them all through Claude Code's hooks and gives you one place to see status and jump in — either as a quick **popup switcher** or a persistent **sidebar** docked next to whatever you're working on.
+Running one Claude Code agent is easy. Running several is where it falls apart:
 
-## Requirements
+- You can't tell which agent is **blocked on you** — one is waiting on a permission prompt while you watch another one think.
+- Two agents in the **same checkout** silently clobber each other's edits, with no conflict markers to warn you.
+- An agent that **reviews its own work** grades its own homework — it inherits every assumption it made while writing the code.
+- The work itself lives nowhere: no backlog, no statuses, no record of what was asked and what shipped.
 
-- **macOS** (uses the macOS Keychain and `launchd`)
-- **tmux** — agents run in tmux panes; the dashboard drives them via tmux
-- **Claude Code** — `capataz` wires into its hooks
-- **Go 1.26+** — to build
+`capataz` is a foreman for that crew. It gives agents a **file-based kanban backlog** to work from, dispatches them into **isolated git worktrees** so parallel work can't collide, routes finished work through **fresh-context reviews**, and puts a **needs-you-first dashboard** in your tmux so the moment an agent is blocked, you're one keystroke away.
 
-## Install
+## The opinions
 
-```sh
-git clone https://github.com/bmena34/capataz && cd capataz
-make install        # builds and copies to /usr/local/bin (prompts for sudo password)
-capataz install     # wire Claude Code hooks + start the daemon
+capataz is opinionated. These are the opinions:
+
+1. **Work is split into vertical slices** small enough for one agent to finish in one sitting, each with a predicted file footprint (`Touches:`).
+2. **Parallel agents never share a working tree.** Overlapping issues run in separate waves; concurrent ones run in separate git worktrees on separate branches.
+3. **Implementers never review their own work.** Reviews run in fresh sessions with no memory of how the code was written, and their findings become new backlog issues.
+4. **Files are the source of truth.** The backlog is plain markdown committed in your repo — no external tracker, no database, `grep`-able and diff-able.
+5. **You supervise, you don't babysit.** The dashboard sorts sessions by who needs you; hands-off work is one row with a subagent count, not a wall of terminals.
+
+If those opinions fit how you want to work, the rest of this README shows you the machine built around them.
+
+## The workflow
+
+Everything runs through a pipeline of **skills** (installed into `~/.claude/skills`, so any Claude Code session can invoke them) and a **markdown backlog** in your repo:
+
+```
+ idea ──▶ plan.md ──▶ issues ──▶ ready-for-agent ──▶ parallel agents ──▶ merged
+      /capataz-start   /capataz-splitter  /capataz-triage   drain (p) / single (Enter)
+                                                                │
+                            findings filed as new issues ◀── fresh review (R) / security review (S)
+                            (back through triage — loop until a review comes back clean)
 ```
 
-`capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, installs the `capataz-work` skill into `~/.claude/skills`, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
+### The backlog
 
-Then bind the tmux keys (live + prints lines for your `~/.tmux.conf`):
+Issues are plain markdown, one feature per directory:
 
-```sh
-capataz keybind          # prefix+g — summon the dashboard popup
-capataz keybind attach   # prefix+a — dock a dashboard sidebar in the current window
-capataz keybind nav      # Ctrl+h/j/k/l — move between panes (nvim-aware)
-capataz statusline       # optional: show a "needs you" badge in your tmux status bar
+```
+<repo>/.scratch/<feature>/issues/NN-slug.md
 ```
 
-## Usage
+```markdown
+# Add the login form
 
-- **`prefix + g`** — open the dashboard as a floating popup (a switcher). Pick a session with `Enter` and it switches you there.
-- **`prefix + a`** — dock the dashboard as a sidebar in the current window. `Ctrl+h`/`Ctrl+l` move between the sidebar and your work.
-- **`n`** — spawn a new Claude session (prompts for directory, then name); it comes up with its own sidebar.
+Status: ready-for-agent
+Type: task
+Blocked by: None
+Touches: internal/tui/, main.go
+
+## What to build
+…
+```
+
+The `Status:` line is the kanban column. The lifecycle:
+
+```
+needs-triage ──▶ ready-for-agent ──▶ claimed ──▶ resolved
+     │                (todo)          (doing)      (done)
+     └──▶ wontfix
+```
+
+The **sidebar** shows the selected repo's backlog as a compact tracker — one colored dot per issue, sorted attention-first, with counts. The files are the source of truth: the dashboard re-reads them live, so claims and resolutions show up as agents make them. The format is compatible with mattpocock's `/to-issues` / `/triage` / `/wayfinder`, so those planning skills interoperate.
+
+### The skills
+
+`capataz install` ships ten skills that drive the pipeline:
+
+**Plan** —
+- **`capataz-start`** — the front door: grills a fuzzy idea into a lean plan (`.scratch/<feature>/plan.md`), then hands off to the splitter.
+- **`capataz-splitter`** — breaks the plan into tracer-bullet vertical slices and publishes them as issues, exploring the codebase to predict each issue's `Touches:` so parallel-safe waves can be derived.
+
+**Intake** —
+- **`capataz-triage`** — walks `needs-triage`/`needs-info` issues, grills you for missing acceptance criteria and scope, then promotes each to `ready-for-agent` or `wontfix`. Review findings land here.
+- **`capataz-investigate`** — diagnoses a bug to its root cause and files a `ready-for-agent` fix issue. It diagnoses; it does not fix.
+
+**Build** —
+- **`capataz-work`** — works one issue end to end: claim → implement → resolve.
+- **`capataz-drain`** — the hands-off orchestrator behind `p` (details below).
+- **`capataz-fix-conflict`** — resolves a conflicted merge-back so a drain never stalls on a `Touches:` misprediction.
+
+**Review** —
+- **`capataz-review`** — fresh-context correctness review of a feature's diff (`R`); files findings as issues.
+- **`capataz-security`** — fresh-context, OWASP-lens audit of the same diff (`S`); files vulnerabilities as severity-tagged issues.
+
+**Learn** —
+- **`capataz-teach`** — explains a codebase area grounded in the real files (`file:line` citations), then quizzes you on it. For the operator, not the agents.
+
+### Starting work on an issue
+
+Open the issue view (`i` in the popup), pick an issue, press `Enter`. capataz dispatches it to a **new session** (or hands it to the session you have selected). Either way the receiving session acts as an **orchestrator**: it delegates the implementation to a **subagent** so its own context stays clean, and the dashboard shows the work as a `⊂N` count on that session's row.
+
+### The hands-off drain
+
+For a whole feature, don't babysit sessions — drain the backlog. From each issue's `Touches:` line, capataz derives which ready issues are **parallel-safe** (pairwise-disjoint files, no blocking edge) and shows it in the issue view (`⇉ parallel-safe: 01, 02`). Multi-select with `space`, press `p`, confirm — and capataz hands the drain to the managed session you're attached to, which runs `capataz-drain` as an **orchestrator** (spawning a fresh orchestrator session only if you aren't attached to one). Either way, one orchestrator works the backlog to completion on its own:
+
+1. Scan the ready issues and take a parallel-safe wave (up to `parallel.max_concurrency`, default 3).
+2. Dispatch each issue to a `capataz-work` subagent in its **own git worktree** (`~/.capataz/worktrees/…`, branch `capataz/<feature>-NN-slug`).
+3. Merge each finished branch back into your base. A conflict goes to a `capataz-fix-conflict` subagent; the drain keeps going.
+4. Re-scan — issues become eligible as their blockers resolve — and repeat until the backlog is drained.
+
+You see the whole drain as **one row with a `⊂N` count**, not N sessions. `P` skips the confirm; `w` drains exactly the selected issues and stops.
+
+> **⚠️ Parallelism belongs to the drain.** A single-issue dispatch (`Enter`) and any session you start by hand run in the **same repo working tree** — running two of those on one repo at once lets them clobber each other with no conflict markers. To parallelize, `p` a batch and let the drain isolate each agent in its own worktree. One tree, one agent.
+
+> **Note on permissions.** Dispatched work runs under **normal Claude Code permissions by default** — a drain handed to your attached session uses that session's posture, and sessions capataz spawns (the fresh `R`/`S` reviews, conflict fixes, a drain started while not attached) prompt like any other session. When an agent hits a prompt, that's not a stall — it's the dashboard doing its job: the row flips to `NEEDS PERM` and you're one keystroke from approving. If you want spawned sessions to run **fully unattended** — no approvals at all — opt in with `"dispatch": { "skip_permissions": true }`, which launches them with `claude --dangerously-skip-permissions`. It never applies to sessions you open by hand (`n`). A per-project allowlist in your repo's `.claude/settings.json` is a safer way to cut the prompt noise.
+
+### The review loop
+
+Three review lanes, split by how much context they're allowed to share:
+
+- **Per-issue sanity check** (opt-in, `review.sanity_check`): before resolving an issue, `capataz-work` spawns a fresh-context subagent to check the change against the issue's acceptance criteria — a guard against an agent fooling itself.
+- **Fresh correctness review** (`R`): a **new session** running `capataz-review` — no memory of how the code was written, so it judges soundness instead of trusting the implementer. Findings are filed as `ready-for-agent` issues, so the loop continues (review → issues → fix → review) until a review comes back clean.
+- **Fresh security review** (`S`): the same discipline, OWASP lens — injection, access control, secret handling, crypto, deserialization. Files each real vulnerability as a severity-tagged issue. Run it when the feature touches auth, input parsing, file/exec, network, or secrets.
+
+Per-dispatch model routing is configurable (`models` in the config): implementation defaults to sonnet, reviews and conflict resolution to opus. `M` in the issue view overrides the model for the next dispatch.
+
+You can also drive the backlog from the command line (this is what the skills themselves call):
+
+```sh
+capataz issue list .                       # show this repo's backlog
+capataz issue new  <feature> "<title>" --body "…"   # file a new issue
+capataz issue claim   .scratch/f/issues/01-x.md
+capataz issue resolve .scratch/f/issues/01-x.md --answer "what shipped"
+capataz issue comment .scratch/f/issues/01-x.md "a note under ## Comments"
+```
+
+## The dashboard
+
+The dashboard is how you supervise the crew. It watches every Claude Code session in your tmux through Claude Code's hooks, sorts them **needs-you-first** (`NEEDS PERM` / `WAITING` / `ASKING` before `working`), and puts you in the blocked one in a single keystroke. Two forms:
+
+- **`prefix + g`** — a floating **popup** switcher. Pick a session with `Enter` and it switches you there.
+- **`prefix + a`** — a persistent **sidebar** docked next to your work, with live status, context-usage gauges, and the issue tracker. `Ctrl+h`/`Ctrl+l` move between the sidebar and your work.
 
 <p align="center">
   <img src="docs/popup.png" alt="capataz popup switcher over a session" width="820">
@@ -93,23 +195,48 @@ Keys inside the **issue view** (`i`):
 
 **After a reboot**, just run `capataz` from a plain terminal: when no tmux server is running it resumes your most recently active resumable session and attaches you to it, dropping you straight back into your work. The rest of your sessions wait in the sidebar's *Resumable* panel, one `Enter` away each. Set `"resume": { "auto_attach": false }` in the config to get the new-session prompt instead.
 
+## Requirements
+
+- **macOS** (uses the macOS Keychain and `launchd`)
+- **tmux** — agents run in tmux panes; the dashboard drives them via tmux
+- **Claude Code** — `capataz` wires into its hooks
+- **Go 1.26+** — to build
+
+## Install
+
+```sh
+git clone https://github.com/bmena34/capataz && cd capataz
+make install        # builds and copies to /usr/local/bin (prompts for sudo password)
+capataz install     # wire Claude Code hooks + start the daemon
+```
+
+`capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, installs the ten capataz skills into `~/.claude/skills`, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
+
+Then bind the tmux keys (live + prints lines for your `~/.tmux.conf`):
+
+```sh
+capataz keybind          # prefix+g — summon the dashboard popup
+capataz keybind attach   # prefix+a — dock a dashboard sidebar in the current window
+capataz keybind nav      # Ctrl+h/j/k/l — move between panes (nvim-aware)
+capataz statusline       # optional: show a "needs you" badge in your tmux status bar
+```
+
 ## First run
 
-After installing, here is the end-to-end path for your first five minutes:
+After installing, here is the end-to-end path — from an empty dashboard to a drained feature:
 
 1. **Open a tmux session** (or use one you already have).
-2. **Bind the keys** if you have not already:
-   ```sh
-   capataz keybind        # prefix+g → popup
-   capataz keybind attach # prefix+a → sidebar
-   capataz keybind nav    # Ctrl+h/j/k/l → move between panes
-   ```
-   Each command prints the lines to add to `~/.tmux.conf` for permanence, and applies them live immediately.
+2. **Bind the keys** if you have not already (see Install above).
 3. **Press `prefix+g`** inside tmux. The popup switcher opens. It will be empty — that is fine.
-4. **Press `n`** inside the popup to spawn a new Claude Code session. Enter a directory (`~` or any project root) and a name, then hit `Enter`. A new tmux window opens with Claude Code and a sidebar docked to it.
+4. **Press `n`** inside the popup to spawn a new Claude Code session. Enter a directory (Tab completes) and a name. A new tmux window opens with Claude Code and a sidebar docked to it.
 5. **Interact with Claude** in that window. You will see its status update in the sidebar in real time: `working`, `waiting`, `needs you`.
-6. **Switch back to the popup** (`prefix+g`) at any point. Your session appears in the list with its current status and last event. Press `Enter` to jump to it, `r` to quick-reply without leaving, or `i` to open its issue backlog.
-7. **Quit a session** with `x` (confirm with `y`) from the dashboard. It disappears immediately. If tmux or your Mac reboots and Claude's process dies unexpectedly, the session reappears as a resumable row — press `Enter` on it to resume via `claude --resume`.
+6. **Switch back to the popup** (`prefix+g`) at any point. Your session appears with its current status. Press `Enter` to jump to it or `r` to quick-reply without leaving.
+
+Then run your first feature through the pipeline:
+
+7. **Plan it** — in a Claude session in your repo, run `/capataz-start` with a rough idea. It will interrogate you into a lean plan, then hand off to `/capataz-splitter`, which files the issues. Watch the backlog dots appear in the sidebar.
+8. **Drain it** — `prefix+g`, `i` to open the issue view, `space` to select issues, `p`, confirm (or `P` to take the whole feature). The drain lands in your attached session as a `capataz-drain` orchestration — its row shows `⊂N` while implementer subagents work the backlog in parallel worktrees.
+9. **Review it** — when the issues are resolved, press `R` in the issue view for a fresh-context review (and `S` for a security pass if the surface warrants it). Findings come back as new issues; triage them with `/capataz-triage` and drain again until the review is clean.
 
 ## How it works
 
@@ -118,62 +245,6 @@ After installing, here is the end-to-end path for your first five minutes:
 - **Dashboard** — a [Bubble Tea](https://github.com/charmbracelet/bubbletea) TUI. You can run several at once (one per sidebar plus a popup); they all read the same daemon state.
 
 It tracks **only tmux sessions** — the ones it can actually act on. Task subagents share their parent's session, so the dashboard shows a `⊂N` count of running subagents on the parent row rather than separate entries.
-
-## Issue tracking
-
-`capataz` reads a per-repo backlog of markdown issues and lets you put an agent on one. The **sidebar** shows a concise status tracker — the backlog of the selected session's repo, one dot per issue, sorted attention-first (blocked / todo / doing / done) with a counts summary. To **act** on the backlog, open the **popup** (`prefix + g`) and press **`i`**: browse the issues and `Enter` on one to start work, either in a **new session** or by handing it to the session you have selected. Either way the receiving session acts as an **orchestrator** — it delegates the actual work to a **subagent** (shown as a `⊂N` count on its row) so its own main-thread context stays clean.
-
-**The review loop.** Three optional review steps keep the work honest:
-
-- **Per-issue sanity check** (opt-in via config `review.sanity_check`): before an agent resolves an issue, the `capataz-work` skill spawns a fresh-context subagent to check the change actually matches the issue's acceptance criteria — a guard against an agent fooling itself.
-- **Fresh full review** (`R` in the issues view): when a feature's issues are all resolved, press `R` to spawn a **new session** that runs the `capataz-review` skill — a clean context with no memory of how the code was written, so it judges soundness rather than trusting the implementers. Its findings are filed straight back into the backlog as new `ready-for-agent` issues, so the loop continues (review → issues → fix → review) until a review comes back clean.
-- **Fresh security review** (`S` in the issues view): press `S` to spawn a **new session** running the `capataz-security` skill — the same fresh-context discipline, but an **OWASP-lens** audit (injection, broken access control, secret handling, crypto, deserialization, …) of the change set. It files each real vulnerability as a severity-tagged (`[high]`, `[medium]`, …) `ready-for-agent` issue. Run it when a feature's surface warrants it — auth, input parsing, file/exec, network, or secrets.
-
-> **⚠️ For parallelism, use `p` — don't hand-start overlapping agents.** A single-issue dispatch (`Enter`) and any session you start by hand run in the **same repo working tree**, so running two of *those* on one repo at once lets them clobber each other with no conflict markers. Parallelism is what the multi-select `p` flow is for: it hands the work to the `capataz-drain` orchestrator, which isolates each agent in its own git worktree and sequences overlapping issues into separate waves. So: `p` a batch to drain, or work one issue at a time — just don't manually run several agents in the same working tree.
-
-Issues live as plain markdown, one feature per directory:
-
-```
-<repo>/.scratch/<feature>/issues/NN-slug.md
-```
-
-Each file has a title and a few header lines near the top:
-
-```markdown
-# Add the login form
-
-Status: ready-for-agent
-Type: task
-Blocked by: None
-Touches: internal/tui/, main.go
-
-## What to build
-…
-```
-
-`capataz install` ships the skills that drive this workflow:
-
-- **`capataz-start`** — the pipeline's front door: grills a fuzzy idea into a lean, splitter-ready plan (`.scratch/<feature>/plan.md`), then hands off to `capataz-splitter`. A lighter, capataz-native take on mattpocock's grill-with-docs (no ADR/glossary).
-- **`capataz-splitter`** — breaks a plan/PRD into tracer-bullet vertical slices and publishes them as issues. It explores the codebase to predict each issue's `Touches:` (the files/dirs it will modify) and draws the slices to minimize overlap. (This is capataz's replacement for mattpocock's `/to-issues`; the file format stays compatible with `/triage` and `/wayfinder`.)
-- **`capataz-work`** — when you start an issue, the agent claims it (`Status: claimed`), implements the slice, and resolves it (`Status: resolved`).
-- **`capataz-investigate`** — diagnoses a bug down to its root cause and files (or annotates) a `ready-for-agent` fix issue; it diagnoses, it does not fix — the diagnosis sibling of `capataz-review`.
-- **`capataz-triage`** — the backlog intake step: walks `needs-triage`/`needs-info` issues, grills for missing acceptance criteria and scope, then moves each to `ready-for-agent` (with a `Touches:` line) or `wontfix`. This is where `capataz-review`/`capataz-security` findings get refined into dispatchable work.
-- **`capataz-review`** — the fresh-context correctness reviewer behind `R`.
-- **`capataz-security`** — the fresh-context, OWASP-lens security reviewer behind `S`; files vulnerabilities as severity-tagged issues.
-- **`capataz-teach`** — an operator learning tool: explains a codebase area grounded in the real files (`file:line` citations), then runs a short in-terminal quiz. Lean and terminal-native — no lesson files.
-- **`capataz-drain`** — the hands-off orchestrator behind `p`: drains a feature's backlog end to end by dispatching `capataz-work` subagents in worktrees, merging each branch back, and re-scanning until nothing's left. Resolves merge conflicts via `capataz-fix-conflict` subagents without stopping.
-
-**Parallel dispatch — the hands-off drain.** From the `Touches:` lines, capataz derives which *ready* issues form a parallel-safe set — pairwise-disjoint files and no blocking edge between them — and shows it (`⇉ parallel-safe: 01, 02`) in the issues view. `space` **multi-selects** issues and `p` starts a **hands-off drain** of them: instead of babysitting one session per issue, capataz spawns a **single orchestrator** running the **`capataz-drain`** skill. That orchestrator works the backlog to completion on its own — it claims each ready issue, hands it to a **`capataz-work` subagent** in its own git worktree (`~/.capataz/worktrees/…`, on a `capataz/<feature>-NN-slug` branch), merges each finished branch back into your base, and **re-scans** so issues become eligible as their blockers resolve — draining wave after wave until nothing's left. A conflicting merge (a `Touches` misprediction) is handed to a **`capataz-fix-conflict`** subagent and the drain keeps going. You see the whole thing as **one row with a `⊂N` subagent count**, not a wall of sessions; `p` opens a confirmation first (capital `P` skips it). At most `parallel.max_concurrency` issues (default 3) run at once. Dispatched agents run with permissions pre-granted (`dispatch.skip_permissions`, on by default) so an unattended drain never stalls waiting for you to approve a prompt. Single-issue dispatch (`Enter`) still opens one issue in its own session, unchanged, for when you want to work it yourself.
-
-The markdown files are the source of truth; the dashboard re-reads them live, so claims and resolutions show up as agents make them. You can also drive the backlog from the command line:
-
-```sh
-capataz issue list .                       # show this repo's backlog
-capataz issue new  <feature> "<title>" --body "…"   # file a new issue
-capataz issue claim   .scratch/f/issues/01-x.md
-capataz issue resolve .scratch/f/issues/01-x.md --answer "what shipped"
-capataz issue comment .scratch/f/issues/01-x.md "a note under ## Comments"
-```
 
 ## Configuration
 
@@ -190,13 +261,26 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
   },
   "sidebar": { "width": 40 },
   "review": { "sanity_check": false },
-  "resume": { "max_retained": 20, "auto_attach": true }
+  "dispatch": { "skip_permissions": false },
+  "parallel": { "max_concurrency": 3 },
+  "resume": { "max_retained": 20, "auto_attach": true },
+  "models": {
+    "implementer": "sonnet",
+    "reviewer": "opus",
+    "security": "opus",
+    "conflict": "opus",
+    "orchestrator": "default"
+  },
+  "context": { "limits": {} }
 }
 ```
 
-`review.sanity_check` (default `false`) turns on the per-issue sanity-check subagent described above; the full fresh review is always available via `R`.
-
-`resume.max_retained` caps how many ended sessions are kept as resumable rows. `resume.auto_attach` (default `true`) makes bare `capataz` resume your most recently active resumable session when no tmux server is running (e.g. after a reboot); set it `false` to always get the new-session prompt instead.
+- `review.sanity_check` — turn on the per-issue sanity-check subagent described above; the full fresh review is always available via `R`.
+- `dispatch.skip_permissions` — **opt-in** (default `false`): run the sessions capataz spawns with an opening prompt (fresh reviews, conflict fixes, drains started with no attached managed session) with `--dangerously-skip-permissions`, so unattended work never pauses for an approval. Off by default because surfacing `NEEDS PERM` is what the dashboard is for. Never applies to sessions you open by hand, or to a drain handed to your attached session.
+- `parallel.max_concurrency` — how many issues a drain works at once.
+- `resume.max_retained` — how many ended sessions are kept as resumable rows. `resume.auto_attach` — bare `capataz` resumes your most recent session when no tmux server is running (e.g. after a reboot); `false` always prompts for a new session instead.
+- `models` — route a model alias (`opus` / `sonnet` / `haiku` / `fable` / `default` = inherit) to each dispatched role.
+- `context.limits` — pin a context-window size per model id (e.g. `{ "claude-sonnet-4-6": "1m" }`) for the per-session context gauge.
 
 > **Note on the usage gauge.** To show your plan usage (current-session and weekly %), `capataz` reads your Claude Code OAuth token from the macOS Keychain and calls `api/oauth/usage` — the **same endpoint Claude Code's `/usage` uses**. This is *unofficial* and undocumented: it may change or stop working at any time. It only ever reads *your* token to display *your* usage; nothing is sent anywhere else. Set `usage.enabled` to `false` to turn it off entirely, or update `url` / `keychain_service` if Anthropic changes them.
 >
