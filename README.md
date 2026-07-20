@@ -120,7 +120,7 @@ You see the whole drain as **one row with a `⊂N` count**, not N sessions. `P` 
 
 > **⚠️ Parallelism belongs to the drain.** A single-issue dispatch (`Enter`) and any session you start by hand run in the **same repo working tree** — running two of those on one repo at once lets them clobber each other with no conflict markers. To parallelize, `p` a batch and let the drain isolate each agent in its own worktree. One tree, one agent.
 
-> **Note on permissions.** A drain handed to your attached session runs under that session's normal permission posture — no new flagged process. But when capataz has to **spawn** a session with an opening prompt — the fresh reviews (`R`/`S`), a conflict fix, or a drain started while you're not attached to a managed session — it launches `claude --dangerously-skip-permissions` by default, because an unattended agent would otherwise freeze at the first interactive permission prompt with nobody there to approve it. This never applies to sessions you open by hand (`n`). Set `"dispatch": { "skip_permissions": false }` to supervise spawned sessions yourself — the tradeoff is that unattended work stalls at its first prompt.
+> **Note on permissions.** Dispatched work runs under **normal Claude Code permissions by default** — a drain handed to your attached session uses that session's posture, and sessions capataz spawns (the fresh `R`/`S` reviews, conflict fixes, a drain started while not attached) prompt like any other session. When an agent hits a prompt, that's not a stall — it's the dashboard doing its job: the row flips to `NEEDS PERM` and you're one keystroke from approving. If you want spawned sessions to run **fully unattended** — no approvals at all — opt in with `"dispatch": { "skip_permissions": true }`, which launches them with `claude --dangerously-skip-permissions`. It never applies to sessions you open by hand (`n`). A per-project allowlist in your repo's `.claude/settings.json` is a safer way to cut the prompt noise.
 
 ### The review loop
 
@@ -261,7 +261,7 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
   },
   "sidebar": { "width": 40 },
   "review": { "sanity_check": false },
-  "dispatch": { "skip_permissions": true },
+  "dispatch": { "skip_permissions": false },
   "parallel": { "max_concurrency": 3 },
   "resume": { "max_retained": 20, "auto_attach": true },
   "models": {
@@ -276,7 +276,7 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
 ```
 
 - `review.sanity_check` — turn on the per-issue sanity-check subagent described above; the full fresh review is always available via `R`.
-- `dispatch.skip_permissions` — sessions capataz spawns with an opening prompt (fresh reviews, conflict fixes, drains started with no attached managed session) run with `--dangerously-skip-permissions` so unattended work never stalls on a prompt. It never applies to sessions you open by hand, or to a drain handed to your attached session (which keeps that session's normal permissions). Set `false` to supervise spawned sessions yourself.
+- `dispatch.skip_permissions` — **opt-in** (default `false`): run the sessions capataz spawns with an opening prompt (fresh reviews, conflict fixes, drains started with no attached managed session) with `--dangerously-skip-permissions`, so unattended work never pauses for an approval. Off by default because surfacing `NEEDS PERM` is what the dashboard is for. Never applies to sessions you open by hand, or to a drain handed to your attached session.
 - `parallel.max_concurrency` — how many issues a drain works at once.
 - `resume.max_retained` — how many ended sessions are kept as resumable rows. `resume.auto_attach` — bare `capataz` resumes your most recent session when no tmux server is running (e.g. after a reboot); `false` always prompts for a new session instead.
 - `models` — route a model alias (`opus` / `sonnet` / `haiku` / `fable` / `default` = inherit) to each dispatched role.
@@ -345,7 +345,6 @@ The `launchd` plist bakes in your PATH at install time. If you install tmux or H
 
 - **macOS only.** `capataz` uses the macOS Keychain (`security`) and `launchd`. It does not run on Linux or Windows.
 - **tmux only.** Only Claude Code sessions running inside tmux panes are tracked. Sessions in bare terminals or other multiplexers are invisible to the daemon.
-- **Spawned dispatch sessions run with permissions pre-granted.** Work handed to your attached session keeps that session's normal permissions, but sessions capataz spawns with an opening prompt — fresh reviews (`R`/`S`), conflict fixes, drains started with no attached managed session — run `claude --dangerously-skip-permissions` by default so unattended work doesn't stall, meaning those agents can run tools without asking. Set `"dispatch": { "skip_permissions": false }` to supervise them yourself.
 - **Usage gauge is unofficial.** The plan usage bars read your OAuth token from the Keychain and call the same internal endpoint Claude Code's `/usage` uses. This is undocumented and may break without notice. You can disable it with `"usage": { "enabled": false }` in your config, or update `url` / `keychain_service` if Anthropic changes them.
 - **Early beta.** Rough edges exist. If something breaks, `capataz logs` and `CAPATAZ_DEBUG=1` are your friends.
 

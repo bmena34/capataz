@@ -343,12 +343,12 @@ func newClaudeSession(name, dir, prompt, model string) (string, error) {
 		args = append(args, "--model", model)
 	}
 	if prompt != "" {
-		// A prompt means this is a dispatched session (the drain orchestrator, a
-		// review, a fix-conflict) booting straight into automated work — not the
-		// interactive session opened by hand (that passes an empty prompt). Give
-		// it a hands-off permission posture so it doesn't freeze on Claude Code's
-		// interactive permission prompt with nobody there to approve. Subagents it
-		// spawns inherit this, so the whole drain is covered.
+		// A prompt means this is a spawned dispatch session (a fresh review, a
+		// fix-conflict, or the drain's no-attached-session fallback) — not the
+		// interactive session opened by hand (that passes an empty prompt).
+		// SkipPermissions (opt-in, default off) gives it a fully unattended
+		// posture; otherwise its permission prompts surface on the dashboard as
+		// NEEDS PERM like any other session. Subagents inherit the posture.
 		if conf().Dispatch.SkipPermissions {
 			args = append(args, "--dangerously-skip-permissions")
 		}
