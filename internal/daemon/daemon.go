@@ -32,7 +32,19 @@ type hub struct {
 	store    *store.Store
 	usage    proto.Usage // latest plan usage, polled centrally and pushed
 	cfg      config.Config
+	// dismissed tombstones recently hard-deleted session ids (unix nanos).
+	// A dismissed session's dying process still fires hooks — the operator-quit
+	// path sends /quit and dismisses immediately, so the SessionEnd lands
+	// seconds later — and without the tombstone that event would re-create the
+	// row as an ended (resumable) entry. See handleEvent/handleDismiss.
+	dismissed map[string]int64
 }
+
+// dismissTombstoneTTL is how long a dismissed session id stays tombstoned.
+// It needs to outlive the kill path's 4s window-teardown grace plus hook
+// latency; a fresh SessionStart lifts it early (a genuine resume reusing the
+// id), so erring long is safe.
+const dismissTombstoneTTL = int64(30 * time.Second)
 
 // Run starts the daemon. It blocks until the process is killed.
 func Run() error {
@@ -57,10 +69,11 @@ func Run() error {
 	defer st.Close()
 
 	h := &hub{
-		sessions: map[string]*proto.Session{},
-		subs:     map[*subscriber]struct{}{},
-		store:    st,
-		cfg:      config.Load(),
+		sessions:  map[string]*proto.Session{},
+		subs:      map[*subscriber]struct{}{},
+		store:     st,
+		cfg:       config.Load(),
+		dismissed: map[string]int64{},
 	}
 	h.reload()
 	if h.cfg.Usage.Enabled {
@@ -147,6 +160,17 @@ func paneSessionName(pane string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// resumableTranscript reports whether the session's transcript exists on disk —
+// the thing `claude --resume <id>` actually needs. Retention keys on this:
+// an ended row with no transcript is a ghost that can never be resumed.
+func resumableTranscript(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // pruneInterval is how often the daemon sweeps for sessions whose pane has died.
 const pruneInterval = 5 * time.Second
 
@@ -163,9 +187,24 @@ func (h *hub) pruneLoop() {
 			continue // tmux unreachable — don't prune blindly
 		}
 		h.mu.Lock()
-		var ended []proto.Session
+		// Reap expired dismiss tombstones (most are lifted by the next event for
+		// that id; this catches ids that never see another event).
+		nowNS := time.Now().UnixNano()
+		for id, ts := range h.dismissed {
+			if nowNS-ts >= dismissTombstoneTTL {
+				delete(h.dismissed, id)
+			}
+		}
+		var ended, ghosts []proto.Session
 		for _, s := range h.sessions {
 			if s.State == proto.StateEnded {
+				// A resumable row whose transcript has since disappeared (or never
+				// existed — rows retained by an older daemon) can't actually be
+				// resumed; evict it rather than keep a dead-end row.
+				if !resumableTranscript(s.TranscriptPath) {
+					ghosts = append(ghosts, *s)
+					delete(h.sessions, s.ID)
+				}
 				continue // already ended — don't re-sweep
 			}
 			if s.TmuxPane == "" || !alive[s.TmuxPane] {
@@ -182,6 +221,13 @@ func (h *hub) pruneLoop() {
 			logging.Infof("swept dead pane, ended session %s", shortID(snap.ID))
 			s := snap
 			h.broadcast(proto.Push{Type: "update", Session: &s})
+		}
+		for _, snap := range ghosts {
+			_ = h.store.DeleteSession(snap.ID)
+			logging.Infof("evicted ghost resumable session %s (no transcript at %q)",
+				shortID(snap.ID), snap.TranscriptPath)
+			s := snap
+			h.broadcast(proto.Push{Type: "remove", Session: &s})
 		}
 		if len(ended) > 0 {
 			h.updateBadge(count, color)
@@ -250,24 +296,29 @@ func (h *hub) serve(conn net.Conn) {
 	}
 }
 
-// handleDismiss drops a retained (ended) session from the resume list: remove
-// it from the in-memory map and the store, then broadcast a "remove" so every
-// dashboard forgets the row. Only ended sessions are dismissable — dismissing a
-// live session would just orphan its pane, so those are left to the kill path.
+// handleDismiss hard-deletes a session row in ANY state: remove it from the
+// in-memory map and the store, tombstone the id, then broadcast a "remove" so
+// every dashboard forgets the row. Two callers, one contract ("gone means
+// gone"): `x` on an ended row dismisses it from the resume list, and the kill
+// path dismisses a still-LIVE session right after sending /quit — the pane is
+// its problem (it tears the window down itself). The tombstone is what makes
+// the live case stick: the dying process's SessionEnd lands seconds after this
+// delete and would otherwise re-create the row as a resumable entry.
 func (h *hub) handleDismiss(id string) {
 	h.mu.Lock()
 	s := h.sessions[id]
-	if s == nil || s.State != proto.StateEnded {
+	if s == nil {
 		h.mu.Unlock()
 		return
 	}
 	snap := *s
 	delete(h.sessions, id)
+	h.dismissed[id] = time.Now().UnixNano()
 	count, color := h.needsSummaryLocked()
 	h.mu.Unlock()
 
 	_ = h.store.DeleteSession(id)
-	logging.Infof("dismissed ended session %s", shortID(id))
+	logging.Infof("dismissed session %s (state=%s)", shortID(id), snap.State)
 	h.updateBadge(count, color)
 	h.broadcast(proto.Push{Type: "remove", Session: &snap})
 }
@@ -317,12 +368,33 @@ func (h *hub) handleEvent(e proto.Event) {
 	now := time.Now().UnixNano()
 
 	h.mu.Lock()
+	// A recently dismissed session must stay gone: its dying process still
+	// fires hooks (the operator-quit /quit's SessionEnd lands seconds after the
+	// dismiss), and letting those re-create the row would resurrect it as a
+	// resumable entry. A SessionStart lifts the tombstone immediately — that's
+	// a genuinely new/resumed conversation reusing the id (claude --resume).
+	if ts, ok := h.dismissed[e.SessionID]; ok {
+		if e.Kind != proto.KindSessionStart && now-ts < dismissTombstoneTTL {
+			h.mu.Unlock()
+			logging.Infof("dropped %s for tombstoned session %s", e.Kind, shortID(e.SessionID))
+			return
+		}
+		delete(h.dismissed, e.SessionID)
+	}
 	s := h.sessions[e.SessionID]
 	if s == nil {
 		// capataz only tracks tmux sessions (the ones it can act on). A brand-new
 		// session with no tmux pane is detached (a claude run outside tmux), so we
 		// ignore it entirely rather than show an un-actionable row.
 		if e.TmuxPane == "" {
+			h.mu.Unlock()
+			return
+		}
+		// SessionEnd's only job is transitioning a tracked row to ended. An
+		// UNtracked session ending (already dismissed, trimmed, or never seen)
+		// is nothing to show — creating a row here would mint a ghost
+		// resumable entry for a conversation the daemon already forgot.
+		if e.Kind == proto.KindSessionEnd {
 			h.mu.Unlock()
 			return
 		}
@@ -391,12 +463,22 @@ func (h *hub) handleEvent(e proto.Event) {
 	}
 	s.State = state
 
+	ghost := false
 	if e.Kind == proto.KindSessionEnd {
 		// Retain the session as a resumable (ended) row rather than deleting it,
 		// so it survives a tmux/machine restart. State==ended + empty pane is the
 		// resumable marker.
 		s.State = proto.StateEnded
 		s.TmuxPane = ""
+		// ...but a resumable row is a promise that `claude --resume <id>` works,
+		// and that needs a transcript on disk. A session that ended without ever
+		// writing one (e.g. the seconds-old throwaway id minted when an in-app
+		// /resume hands the pane to another conversation) has nothing to resume —
+		// drop it instead of retaining a ghost row.
+		if !resumableTranscript(s.TranscriptPath) {
+			delete(h.sessions, e.SessionID)
+			ghost = true
+		}
 	}
 	snap := *s
 	needsCount, needsColor := h.needsSummaryLocked()
@@ -404,6 +486,14 @@ func (h *hub) handleEvent(e proto.Event) {
 
 	// Ambient awareness: keep the tmux needs-you badge current.
 	h.updateBadge(needsCount, needsColor)
+
+	if ghost {
+		_ = h.store.DeleteSession(e.SessionID)
+		logging.Infof("dropped ghost session %s on end (no transcript at %q)",
+			shortID(e.SessionID), snap.TranscriptPath)
+		h.broadcast(proto.Push{Type: "remove", Session: &snap})
+		return
+	}
 
 	_ = h.store.Insert(store.Record{
 		TS: now, SessionID: e.SessionID, Kind: string(e.Kind),
