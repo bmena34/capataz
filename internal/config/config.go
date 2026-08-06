@@ -105,19 +105,20 @@ type Parallel struct {
 	MaxConcurrency int `json:"max_concurrency"`
 }
 
-// Dispatch controls how capataz launches the sessions it dispatches to do
-// automated work (the hands-off drain orchestrator, the R/S reviews, and the
-// fix-conflict resolver — any session capataz starts with an opening prompt).
+// Dispatch controls how capataz launches the sessions it SPAWNS with an
+// opening prompt (the fresh R/S reviews, the fix-conflict resolver, and the
+// drain's fallback when no managed session is attached). A drain handed to the
+// attached session — the preferred path — is unaffected: it runs under that
+// session's own permission posture.
 type Dispatch struct {
-	// SkipPermissions runs those dispatched sessions with
-	// `claude --dangerously-skip-permissions` so they don't stall forever on
-	// Claude Code's interactive permission prompt (a dispatched agent reads the
-	// backlog at an absolute path outside its cwd, claims, edits, and commits —
-	// each of which would otherwise prompt, and nobody is there to approve).
-	// It applies ONLY to prompted/dispatched sessions, never to the interactive
-	// session you open by hand (prefix+n). Default true. Set it false to
-	// supervise dispatched sessions and approve their tools yourself; the
-	// tradeoff is that an unattended drain will then freeze on the first prompt.
+	// SkipPermissions, when true, runs those spawned sessions with
+	// `claude --dangerously-skip-permissions` so fully unattended work never
+	// stalls on Claude Code's interactive permission prompt. Default FALSE:
+	// surfacing "needs permission" is the dashboard's job — a spawned session
+	// that hits a prompt shows as NEEDS PERM and the operator is one keystroke
+	// away. Opt in only if you want spawned drains/reviews to run with no
+	// approvals at all (those agents can then use any tool without asking).
+	// It never applies to the interactive session you open by hand (prefix+n).
 	SkipPermissions bool `json:"skip_permissions"`
 }
 
@@ -159,7 +160,7 @@ func Default() Config {
 			PollSeconds:     300,
 		},
 		Sidebar:  Sidebar{Width: 40},
-		Dispatch: Dispatch{SkipPermissions: true},
+		Dispatch: Dispatch{SkipPermissions: false},
 		Parallel: Parallel{MaxConcurrency: 3},
 		Resume:   Resume{MaxRetained: 20, AutoAttach: true},
 		Models: Models{
