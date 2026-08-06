@@ -797,10 +797,13 @@ func (m model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleKillKey handles the kill-confirmation prompt: y confirms a graceful
-// quit, anything else cancels.
+// quit that deletes the row everywhere, r confirms a graceful quit that keeps
+// the row as a resumable entry, anything else cancels.
 func (m model) handleKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
+	case "y", "Y", "r", "R":
+		// retain: quit Claude but keep the row so it can be resumed later.
+		retain := msg.String() == "r" || msg.String() == "R"
 		s, ok := m.sessionByID(m.killID)
 		m.mode = modeNormal
 		m.killID = ""
@@ -814,6 +817,17 @@ func (m model) handleKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if err := gracefulExit(s.TmuxPane); err != nil {
 			m.status = "quit failed: " + err.Error()
 			return m, nil
+		}
+		if retain {
+			// Resumable quit: /quit (above) makes Claude exit cleanly and write
+			// its transcript; we deliberately do NOT dismiss the row, so the
+			// dying process's SessionEnd transitions it to the ended (resumable)
+			// state — exactly like a session that ended on its own. Enter on that
+			// row relaunches it via `claude --resume <id>`. We still tear the
+			// window down (killFallback) to clear the leftover sidebar zombie;
+			// only the conversation is preserved, not the pane.
+			m.status = "quitting " + m.label(s) + " (resumable)…"
+			return m, killFallback(window, s.ID)
 		}
 		// Remove the row immediately so the operator sees it gone at once,
 		// before the 4-second grace period for the window teardown.
@@ -1236,7 +1250,9 @@ func (m model) killPopup(base string) string {
 		dimStyle.Render("Sends /quit so Claude exits cleanly and writes its"),
 		dimStyle.Render("transcript. If it doesn't exit, the pane is force-killed."),
 		"",
-		footerStyle.Render("y quit · n / Esc cancel"),
+		dimStyle.Render("r keeps it as a resumable row (↵ to resume later)."),
+		"",
+		footerStyle.Render("y quit · r quit (resumable) · n / Esc cancel"),
 	}
 	body := strings.Join(lines, "\n")
 	pw := 58

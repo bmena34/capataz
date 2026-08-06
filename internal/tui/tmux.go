@@ -99,8 +99,9 @@ func reply(pane, text string) error {
 }
 
 // gracefulExit asks Claude to quit cleanly: it interrupts any in-progress work,
-// clears the prompt, then sends the /quit command. When Claude exits its pane
-// closes and its SessionEnd hook removes it from the dashboard. Tearing down the
+// clears the prompt, then sends the /quit command. The caller hard-deletes the
+// row via dismissSession right after (the daemon tombstones the id so the dying
+// process's SessionEnd can't resurrect it as a resumable row). Tearing down the
 // window (killWindow, via killFallback) is the backstop + sidebar cleanup.
 func gracefulExit(pane string) error {
 	if pane == "" {
