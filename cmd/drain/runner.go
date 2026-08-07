@@ -12,7 +12,10 @@ import (
 // fake implementation drives the loop without spawning anything.
 type Runner interface {
 	// Waves runs `capataz issue waves <feature> --json` and returns the raw JSON.
-	Waves(feature string) ([]byte, error)
+	// repo is the directory the command runs in — `capataz issue waves` resolves
+	// the backlog from its cwd (the primary checkout of that dir), so this must be
+	// the target repo, not the drain process's own cwd.
+	Waves(feature, repo string) ([]byte, error)
 
 	// Claim runs `capataz issue claim <path>`.
 	Claim(issuePath string) error
@@ -42,8 +45,10 @@ type realRunner struct {
 	herdrBin   string // default "herdr"; overridden by HERDR_BIN
 }
 
-func (r *realRunner) Waves(feature string) ([]byte, error) {
-	out, err := exec.Command(r.capatazBin, "issue", "waves", feature, "--json").Output()
+func (r *realRunner) Waves(feature, repo string) ([]byte, error) {
+	cmd := exec.Command(r.capatazBin, "issue", "waves", feature, "--json")
+	cmd.Dir = repo // waves resolves the backlog from cwd; root it in the target repo
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("capataz issue waves: %w", err)
 	}

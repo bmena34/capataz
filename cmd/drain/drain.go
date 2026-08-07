@@ -66,7 +66,7 @@ func Drain(cfg Config, runner Runner) error {
 		cfg.Feature, cfg.Concurrency, cfg.SkipPermissions, cfg.DryRun)
 
 	for round := 1; ; round++ {
-		raw, err := runner.Waves(cfg.Feature)
+		raw, err := runner.Waves(cfg.Feature, cfg.RepoPath)
 		if err != nil {
 			return fmt.Errorf("round %d: waves: %w", round, err)
 		}

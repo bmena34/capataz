@@ -161,8 +161,8 @@ func (f *fakeRunner) record(op string, args ...string) {
 	f.calls = append(f.calls, fakeCall{Op: op, Args: args})
 }
 
-func (f *fakeRunner) Waves(feature string) ([]byte, error) {
-	f.record("Waves", feature)
+func (f *fakeRunner) Waves(feature, repo string) ([]byte, error) {
+	f.record("Waves", feature, repo)
 	if len(f.wavesResponses) == 0 {
 		return []byte(`{"feature":"` + feature + `","waves":[]}`), nil
 	}
