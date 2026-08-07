@@ -85,6 +85,39 @@ platforms = ["macos", "linux"]
 command = ["./bin/drain"]
 
 # ---------------------------------------------------------------------------
+# usage — plan-usage gauge overlay pane.
+#
+# Opens a short-lived overlay that runs `capataz usage`: reads the Claude
+# Code OAuth token from the macOS Keychain and prints the live plan-usage
+# gauge (session % + bar + reset time; weekly % + bar + reset time).
+# NOTE: capataz usage calls an UNOFFICIAL Anthropic endpoint — the same one
+# `claude`'s /usage shows. It is not documented and can change; the URL and
+# keychain_service are configurable in ~/.config/capataz/config.json, and
+# usage.enabled=false disables it entirely.
+#
+# Opened via:
+#   herdr plugin pane open --plugin bmena34.capataz-herdr --entrypoint usage
+# or via the `usage` action below.
+[[panes]]
+id = "usage"
+title = "Capataz: Plan Usage"
+placement = "overlay"
+platforms = ["macos", "linux"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/usage-ui.sh\""]
+
+# ---------------------------------------------------------------------------
+# usage action — open the plan-usage overlay.
+#
+# Bind in herdr's config.toml with type = "plugin_action"; action id is the
+# positional arg:
+#   herdr plugin action invoke usage
+[[actions]]
+id = "usage"
+title = "Capataz: Plan Usage"
+platforms = ["macos", "linux"]
+command = ["./bin/open-usage.sh"]
+
+# ---------------------------------------------------------------------------
 # worktree.created event hook.
 #
 # herdr fires this when it creates a git worktree. In the drain loop capataz
