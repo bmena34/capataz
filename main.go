@@ -103,6 +103,16 @@ func main() {
 		run(func() error { return tui.Attach(pane) })
 	case "issue":
 		run(func() error { return issues.Run(args[1:]) })
+	case "issues":
+		// Standalone, daemon-free full-screen backlog viewer (no tmux, no daemon).
+		// Scopes to the repo at cwd, or an explicit path arg. Used by the herdr
+		// plugin pane and usable in any bare terminal.
+		logging.SetComponent("tui")
+		cwd := ""
+		if len(args) > 1 {
+			cwd = args[1]
+		}
+		run(func() error { return tui.RunIssueView(cwd) })
 	case "config":
 		run(showConfig)
 	case "quit":
