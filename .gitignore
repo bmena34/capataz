@@ -1,6 +1,6 @@
 # Built orchestrator binary (produced by scripts/build.sh)
 bin/drain
-drain
+/drain
 
 # macOS
 .DS_Store
