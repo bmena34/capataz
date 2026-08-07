@@ -118,6 +118,10 @@ func main() {
 		run(showConfig)
 	case "usage":
 		run(runUsage)
+	case "trust-dir":
+		// Pre-seed Claude folder-trust for a directory (used by the herdr drain
+		// before dispatching an agent into a fresh worktree).
+		run(func() error { return runTrustDir(args[1:]) })
 	case "quit":
 		run(tui.Quit)
 	case "logs":
