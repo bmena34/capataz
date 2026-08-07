@@ -8,7 +8,8 @@
 //	capataz daemon      run the background state daemon (launchd-managed)
 //	capataz hook <kind> report a Claude Code hook event (used internally)
 //	capataz install     wire up hooks + launchd agent
-//	capataz uninstall    remove hooks + launchd agent
+//	capataz uninstall   remove hooks + launchd agent
+//	capataz usage       print the live plan-usage gauge (reads Keychain; unofficial endpoint)
 package main
 
 import (
@@ -115,6 +116,8 @@ func main() {
 		run(func() error { return tui.RunIssueView(cwd) })
 	case "config":
 		run(showConfig)
+	case "usage":
+		run(runUsage)
 	case "quit":
 		run(tui.Quit)
 	case "logs":
@@ -203,6 +206,7 @@ usage:
   capataz keybind attach [k]   bind prefix+k (default a) to attach a sidebar
   capataz keybind nav          bind Ctrl+h/j/k/l pane nav (nvim-aware)
   capataz statusline  show a "needs you" badge in tmux (off to remove)
+  capataz usage       print the plan-usage gauge (reads Keychain token; unofficial endpoint)
   capataz issue …     manage the local .scratch backlog: claim/resolve/status/comment/list/new (used by skills)
   capataz config      print the config file path + contents (~/.config/capataz)
   capataz install     wire up Claude Code hooks + start the daemon
