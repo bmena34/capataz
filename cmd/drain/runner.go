@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Runner is the interface behind all capataz and herdr shell-outs.
@@ -87,13 +88,23 @@ func (r *realRunner) Resolve(issuePath string) error {
 	return nil
 }
 
-// worktreeCreateResult is the subset of herdr worktree create's JSON output
-// that we need: specifically the workspace_id of the newly created workspace.
+// worktreeCreateResult is the subset of herdr worktree create/open JSON output
+// that we need. herdr nests the workspace_id — it is NOT a flat result.workspace_id.
+// create returns it under result.workspace.workspace_id (and result.root_pane),
+// open returns result.worktree.open_workspace_id. root_pane.pane_id is also
+// present, so we capture it to skip a follow-up pane list.
 type worktreeCreateResult struct {
 	Result struct {
-		WorkspaceID string `json:"workspace_id"`
-		// herdr may also return an open_workspace_id when it opens an existing one
-		OpenWorkspaceID string `json:"open_workspace_id"`
+		Workspace struct {
+			WorkspaceID string `json:"workspace_id"`
+		} `json:"workspace"`
+		RootPane struct {
+			WorkspaceID string `json:"workspace_id"`
+			PaneID      string `json:"pane_id"`
+		} `json:"root_pane"`
+		Worktree struct {
+			OpenWorkspaceID string `json:"open_workspace_id"`
+		} `json:"worktree"`
 	} `json:"result"`
 	Error *struct {
 		Code    string `json:"code"`
@@ -129,9 +140,12 @@ func parseWorktreeID(out []byte, op string) (string, error) {
 	if result.Error != nil {
 		return "", fmt.Errorf("%s: %s: %s", op, result.Error.Code, result.Error.Message)
 	}
-	wsID := result.Result.WorkspaceID
+	wsID := result.Result.Workspace.WorkspaceID
 	if wsID == "" {
-		wsID = result.Result.OpenWorkspaceID
+		wsID = result.Result.RootPane.WorkspaceID
+	}
+	if wsID == "" {
+		wsID = result.Result.Worktree.OpenWorkspaceID
 	}
 	if wsID == "" {
 		return "", fmt.Errorf("%s: no workspace_id in output: %s", op, out)
@@ -182,7 +196,23 @@ func (r *realRunner) AgentStart(name, paneID, prompt string, skipPerms bool) err
 	} else {
 		args = append(args, "--", prompt)
 	}
-	out, err := exec.Command(r.herdrBin, args...).CombinedOutput()
+	// A freshly-created worktree pane isn't at its interactive shell prompt the
+	// instant herdr returns from `worktree create`; agent start rejects it with
+	// "not an available shell" (agent_pane_busy) until the shell settles. Retry
+	// with a short backoff on exactly that condition — other errors fail fast.
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 15; attempt++ {
+		out, err = exec.Command(r.herdrBin, args...).CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		if !strings.Contains(string(out), "not an available shell") &&
+			!strings.Contains(string(out), "agent_pane_busy") {
+			break // a genuinely different failure — don't spin on it
+		}
+		time.Sleep(time.Second)
+	}
 	if err != nil {
 		return fmt.Errorf("herdr agent start %s: %w\n%s", name, err, out)
 	}
