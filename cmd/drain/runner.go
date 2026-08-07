@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,11 +19,13 @@ type Runner interface {
 	// the target repo, not the drain process's own cwd.
 	Waves(feature, repo string) ([]byte, error)
 
-	// Claim runs `capataz issue claim <path>`.
-	Claim(issuePath string) error
-
-	// Resolve runs `capataz issue resolve <path>`.
-	Resolve(issuePath string) error
+	// CommitsAhead returns how many commits <branch> is ahead of the base repo's
+	// HEAD (git -C repo rev-list --count HEAD..branch). Zero means the dispatched
+	// agent produced no work — the drain treats that as a failed issue, not a
+	// clean merge. The drain deliberately does NOT claim or resolve: capataz-work
+	// owns claim → implement → resolve and refuses a pre-claimed issue, so the
+	// drain only verifies the branch has commits, then merges.
+	CommitsAhead(repo, branch string) (int, error)
 
 	// WorktreeCreate runs `herdr worktree create --no-focus --branch <branch> --cwd <cwd>`
 	// and returns the workspace_id from the JSON result.
@@ -72,20 +75,16 @@ func (r *realRunner) Waves(feature, repo string) ([]byte, error) {
 	return out, nil
 }
 
-func (r *realRunner) Claim(issuePath string) error {
-	out, err := exec.Command(r.capatazBin, "issue", "claim", issuePath).CombinedOutput()
+func (r *realRunner) CommitsAhead(repo, branch string) (int, error) {
+	out, err := exec.Command("git", "-C", repo, "rev-list", "--count", "HEAD.."+branch).Output()
 	if err != nil {
-		return fmt.Errorf("capataz issue claim %s: %w\n%s", issuePath, err, out)
+		return 0, fmt.Errorf("git -C %s rev-list --count HEAD..%s: %w", repo, branch, err)
 	}
-	return nil
-}
-
-func (r *realRunner) Resolve(issuePath string) error {
-	out, err := exec.Command(r.capatazBin, "issue", "resolve", issuePath).CombinedOutput()
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
 	if err != nil {
-		return fmt.Errorf("capataz issue resolve %s: %w\n%s", issuePath, err, out)
+		return 0, fmt.Errorf("parse commit count %q: %w", strings.TrimSpace(string(out)), err)
 	}
-	return nil
+	return n, nil
 }
 
 // worktreeCreateResult is the subset of herdr worktree create/open JSON output

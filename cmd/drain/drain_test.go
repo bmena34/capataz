@@ -157,6 +157,10 @@ type fakeRunner struct {
 	// mergeConflicted maps branch name → whether Merge should return conflicted=true.
 	mergeConflicted map[string]bool
 
+	// commitsAhead maps branch name → commits ahead of base returned by CommitsAhead.
+	// Absent/nil → default 1 (the agent produced work).
+	commitsAhead map[string]int
+
 	calls []fakeCall
 }
 
@@ -178,14 +182,14 @@ func (f *fakeRunner) Waves(feature, repo string) ([]byte, error) {
 	return f.wavesResponses[idx], nil
 }
 
-func (f *fakeRunner) Claim(path string) error {
-	f.record("Claim", path)
-	return nil
-}
-
-func (f *fakeRunner) Resolve(path string) error {
-	f.record("Resolve", path)
-	return nil
+func (f *fakeRunner) CommitsAhead(repo, branch string) (int, error) {
+	f.record("CommitsAhead", repo, branch)
+	if f.commitsAhead != nil {
+		if n, ok := f.commitsAhead[branch]; ok {
+			return n, nil
+		}
+	}
+	return 1, nil // default: the agent produced work
 }
 
 func (f *fakeRunner) WorktreeCreate(branch, cwd string) (string, error) {
@@ -279,18 +283,19 @@ func TestDrain_SingleWaveDone(t *testing.T) {
 	if err := Drain(cfg, runner); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should have called Claim + Resolve for each issue.
-	if n := countCalls(runner.calls, "Claim"); n != 2 {
-		t.Errorf("Claim calls: got %d, want 2", n)
-	}
-	if n := countCalls(runner.calls, "Resolve"); n != 2 {
-		t.Errorf("Resolve calls: got %d, want 2", n)
-	}
+	// The drain does NOT claim/resolve (capataz-work does). Each issue should be
+	// dispatched (worktree + agent), verified (commits ahead), and merged.
 	if n := countCalls(runner.calls, "WorktreeCreate"); n != 2 {
 		t.Errorf("WorktreeCreate calls: got %d, want 2", n)
 	}
 	if n := countCalls(runner.calls, "AgentStart"); n != 2 {
 		t.Errorf("AgentStart calls: got %d, want 2", n)
+	}
+	if n := countCalls(runner.calls, "CommitsAhead"); n != 2 {
+		t.Errorf("CommitsAhead calls: got %d, want 2", n)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 2 {
+		t.Errorf("Merge calls: got %d, want 2", n)
 	}
 	// Waves called twice: once for real issues, once for empty re-scan.
 	if n := countCalls(runner.calls, "Waves"); n != 2 {
@@ -322,8 +327,8 @@ func TestDrain_ConcurrencyCap(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Only 2 of 3 issues dispatched in this round (cap=2).
-	if n := countCalls(runner.calls, "Claim"); n != 2 {
-		t.Errorf("Claim calls: got %d, want 2 (cap enforced)", n)
+	if n := countCalls(runner.calls, "AgentStart"); n != 2 {
+		t.Errorf("AgentStart calls: got %d, want 2 (cap enforced)", n)
 	}
 }
 
@@ -352,12 +357,12 @@ func TestDrain_BlockedAgentNotResolved(t *testing.T) {
 	if err := Drain(cfg, runner); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if n := countCalls(runner.calls, "Claim"); n != 1 {
-		t.Errorf("Claim calls: got %d, want 1", n)
+	if n := countCalls(runner.calls, "AgentStart"); n != 1 {
+		t.Errorf("AgentStart calls: got %d, want 1", n)
 	}
-	// Resolve must NOT be called when blocked.
-	if n := countCalls(runner.calls, "Resolve"); n != 0 {
-		t.Errorf("Resolve calls: got %d, want 0 (blocked issue must not be resolved)", n)
+	// Merge must NOT be called when the agent is blocked (no verified work).
+	if n := countCalls(runner.calls, "Merge"); n != 0 {
+		t.Errorf("Merge calls: got %d, want 0 (blocked issue must not merge)", n)
 	}
 }
 
@@ -385,8 +390,8 @@ func TestDrain_TimeoutAgentNotResolved(t *testing.T) {
 	if err := Drain(cfg, runner); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if n := countCalls(runner.calls, "Resolve"); n != 0 {
-		t.Errorf("Resolve calls: got %d, want 0 (timed-out issue must not be resolved)", n)
+	if n := countCalls(runner.calls, "Merge"); n != 0 {
+		t.Errorf("Merge calls: got %d, want 0 (timed-out issue must not merge)", n)
 	}
 }
 
@@ -411,11 +416,11 @@ func TestDrain_MultipleRounds(t *testing.T) {
 	if n := countCalls(runner.calls, "Waves"); n != 3 {
 		t.Errorf("Waves calls: got %d, want 3", n)
 	}
-	if n := countCalls(runner.calls, "Claim"); n != 2 {
-		t.Errorf("Claim calls: got %d, want 2", n)
+	if n := countCalls(runner.calls, "WorktreeCreate"); n != 2 {
+		t.Errorf("WorktreeCreate calls: got %d, want 2", n)
 	}
-	if n := countCalls(runner.calls, "Resolve"); n != 2 {
-		t.Errorf("Resolve calls: got %d, want 2", n)
+	if n := countCalls(runner.calls, "Merge"); n != 2 {
+		t.Errorf("Merge calls: got %d, want 2", n)
 	}
 }
 
@@ -435,8 +440,8 @@ func TestDrain_DryRun(t *testing.T) {
 	if err := Drain(cfg, runner); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Dry-run must NOT call Claim, Resolve, WorktreeCreate, or AgentStart.
-	for _, op := range []string{"Claim", "Resolve", "WorktreeCreate", "AgentStart", "AgentWait"} {
+	// Dry-run must NOT execute any side effects.
+	for _, op := range []string{"WorktreeCreate", "AgentStart", "AgentWait", "CommitsAhead", "Merge"} {
 		if n := countCalls(runner.calls, op); n != 0 {
 			t.Errorf("dry-run must not call %s (got %d calls)", op, n)
 		}
@@ -446,8 +451,8 @@ func TestDrain_DryRun(t *testing.T) {
 	if !strings.Contains(output, "DRY RUN") {
 		t.Errorf("dry-run output missing 'DRY RUN': %s", output)
 	}
-	if !strings.Contains(output, "capataz issue claim") {
-		t.Errorf("dry-run output missing 'capataz issue claim': %s", output)
+	if !strings.Contains(output, "capataz-work") {
+		t.Errorf("dry-run output missing 'capataz-work': %s", output)
 	}
 	if !strings.Contains(output, "herdr worktree create") {
 		t.Errorf("dry-run output missing 'herdr worktree create': %s", output)
@@ -478,6 +483,31 @@ func TestDrain_SkipPermissionsFlag(t *testing.T) {
 	}
 	// The fake records the prompt arg — we trust the real runner to pass
 	// --dangerously-skip-permissions; here we just verify the code path ran.
+}
+
+// TestDispatchOne_EmptyBranchFailsNoMerge covers the live-found bug: the agent
+// reaches "done" but produced no commits (e.g. capataz-work refused an
+// already-claimed issue). The drain must treat that as a failure — no merge, no
+// worktree removal — rather than a silent clean success.
+func TestDispatchOne_EmptyBranchFailsNoMerge(t *testing.T) {
+	const branch = "capataz/f-01-a"
+	runner := &fakeRunner{
+		agentWaitStatus: map[string]string{"drain-f-01": "done"},
+		commitsAhead:    map[string]int{branch: 0}, // agent committed nothing
+	}
+	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
+	iss := WaveIssue{Number: "01", Path: "/repo/.scratch/f/issues/01-a.md", Feature: "f", Status: "ready-for-agent", Branch: branch}
+
+	result := dispatchOne(cfg, runner, iss, func(string, ...any) {})
+	if result.Status != "error" {
+		t.Errorf("expected status=error for empty branch, got %q", result.Status)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 0 {
+		t.Errorf("Merge must not be called for an empty branch; got %d", n)
+	}
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 0 {
+		t.Errorf("WorktreeRemove must not be called for an empty branch; got %d", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -529,23 +559,24 @@ func TestMergeBack_CleanMerge(t *testing.T) {
 		t.Errorf("fix-conflict AgentStart calls: got %d, want 0", agentStarts)
 	}
 
-	// Verify call ordering: Merge comes after Resolve, WorktreeRemove comes after Merge.
-	var mergeIdx, resolveIdx, removeIdx int = -1, -1, -1
+	// Verify call ordering: Merge comes after the commits check, WorktreeRemove
+	// comes after Merge.
+	var mergeIdx, verifyIdx, removeIdx int = -1, -1, -1
 	for i, c := range runner.calls {
 		switch c.Op {
-		case "Resolve":
-			resolveIdx = i
+		case "CommitsAhead":
+			verifyIdx = i
 		case "Merge":
 			mergeIdx = i
 		case "WorktreeRemove":
 			removeIdx = i
 		}
 	}
-	if resolveIdx < 0 || mergeIdx < 0 || removeIdx < 0 {
-		t.Fatalf("missing calls: Resolve=%d Merge=%d WorktreeRemove=%d", resolveIdx, mergeIdx, removeIdx)
+	if verifyIdx < 0 || mergeIdx < 0 || removeIdx < 0 {
+		t.Fatalf("missing calls: CommitsAhead=%d Merge=%d WorktreeRemove=%d", verifyIdx, mergeIdx, removeIdx)
 	}
-	if mergeIdx < resolveIdx {
-		t.Errorf("Merge (%d) must come after Resolve (%d)", mergeIdx, resolveIdx)
+	if mergeIdx < verifyIdx {
+		t.Errorf("Merge (%d) must come after CommitsAhead verify (%d)", mergeIdx, verifyIdx)
 	}
 	if removeIdx < mergeIdx {
 		t.Errorf("WorktreeRemove (%d) must come after Merge (%d)", removeIdx, mergeIdx)
