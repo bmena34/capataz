@@ -154,6 +154,9 @@ type fakeRunner struct {
 	// agentWaitStatus maps agent name → status string returned by AgentWait.
 	agentWaitStatus map[string]string
 
+	// mergeConflicted maps branch name → whether Merge should return conflicted=true.
+	mergeConflicted map[string]bool
+
 	calls []fakeCall
 }
 
@@ -190,9 +193,29 @@ func (f *fakeRunner) WorktreeCreate(branch, cwd string) (string, error) {
 	return "ws-fake-" + branch, nil
 }
 
+func (f *fakeRunner) WorktreeOpen(cwd string) (string, error) {
+	f.record("WorktreeOpen", cwd)
+	return "ws-base-" + cwd, nil
+}
+
 func (f *fakeRunner) PaneList(workspaceID string) (string, error) {
 	f.record("PaneList", workspaceID)
 	return "p-fake-" + workspaceID, nil
+}
+
+func (f *fakeRunner) Merge(branch, repo string) (bool, error) {
+	f.record("Merge", branch, repo)
+	if f.mergeConflicted != nil {
+		if conflicted, ok := f.mergeConflicted[branch]; ok {
+			return conflicted, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeRunner) WorktreeRemove(workspaceID string) error {
+	f.record("WorktreeRemove", workspaceID)
+	return nil
 }
 
 func (f *fakeRunner) AgentStart(name, paneID, prompt string, skipPerms bool) error {
@@ -455,4 +478,242 @@ func TestDrain_SkipPermissionsFlag(t *testing.T) {
 	}
 	// The fake records the prompt arg — we trust the real runner to pass
 	// --dangerously-skip-permissions; here we just verify the code path ran.
+}
+
+// ---------------------------------------------------------------------------
+// Merge-back path tests
+// ---------------------------------------------------------------------------
+
+// TestMergeBack_CleanMerge verifies the happy path: agent done → Merge
+// (no conflict) → WorktreeRemove. No fix-conflict agent is started.
+func TestMergeBack_CleanMerge(t *testing.T) {
+	const branch = "capataz/f-01-a"
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{
+			[]byte(`{"feature":"f","waves":[[{"number":"01","path":"/repo/.scratch/f/issues/01-a.md","feature":"f","status":"ready-for-agent","branch":"` + branch + `"}]]}`),
+			emptyWave("f"),
+		},
+		// No mergeConflicted entry → Merge returns (false, nil) = clean.
+	}
+	cfg := Config{
+		Feature:        "f",
+		Concurrency:    0,
+		AgentTimeoutMS: 5000,
+		RepoPath:       "/repo",
+		Out:            &strings.Builder{},
+	}
+	if err := Drain(cfg, runner); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Merge must be called once with the issue branch and repo.
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+	// WorktreeRemove must be called once (clean path, no conflict agent).
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
+		t.Errorf("WorktreeRemove calls: got %d, want 1", n)
+	}
+	// WorktreeOpen must NOT be called on a clean merge.
+	if n := countCalls(runner.calls, "WorktreeOpen"); n != 0 {
+		t.Errorf("WorktreeOpen calls: got %d, want 0 (no conflict)", n)
+	}
+	// Fix-conflict agent must NOT be started.
+	agentStarts := 0
+	for _, c := range runner.calls {
+		if c.Op == "AgentStart" && len(c.Args) > 0 && strings.HasPrefix(c.Args[0], "fix-conflict-") {
+			agentStarts++
+		}
+	}
+	if agentStarts != 0 {
+		t.Errorf("fix-conflict AgentStart calls: got %d, want 0", agentStarts)
+	}
+
+	// Verify call ordering: Merge comes after Resolve, WorktreeRemove comes after Merge.
+	var mergeIdx, resolveIdx, removeIdx int = -1, -1, -1
+	for i, c := range runner.calls {
+		switch c.Op {
+		case "Resolve":
+			resolveIdx = i
+		case "Merge":
+			mergeIdx = i
+		case "WorktreeRemove":
+			removeIdx = i
+		}
+	}
+	if resolveIdx < 0 || mergeIdx < 0 || removeIdx < 0 {
+		t.Fatalf("missing calls: Resolve=%d Merge=%d WorktreeRemove=%d", resolveIdx, mergeIdx, removeIdx)
+	}
+	if mergeIdx < resolveIdx {
+		t.Errorf("Merge (%d) must come after Resolve (%d)", mergeIdx, resolveIdx)
+	}
+	if removeIdx < mergeIdx {
+		t.Errorf("WorktreeRemove (%d) must come after Merge (%d)", removeIdx, mergeIdx)
+	}
+}
+
+// TestMergeBack_ConflictedMerge verifies the conflict path: agent done →
+// Merge (conflict) → WorktreeOpen (base repo) → PaneList → fix-conflict
+// AgentStart → AgentWait → WorktreeRemove.
+func TestMergeBack_ConflictedMerge(t *testing.T) {
+	const branch = "capataz/f-01-a"
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{
+			[]byte(`{"feature":"f","waves":[[{"number":"01","path":"/repo/.scratch/f/issues/01-a.md","feature":"f","status":"ready-for-agent","branch":"` + branch + `"}]]}`),
+			emptyWave("f"),
+		},
+		mergeConflicted: map[string]bool{
+			branch: true, // Merge returns conflicted=true for this branch.
+		},
+		// fix-conflict agent resolves successfully (default "done").
+	}
+	cfg := Config{
+		Feature:        "f",
+		Concurrency:    0,
+		AgentTimeoutMS: 5000,
+		RepoPath:       "/repo",
+		Out:            &strings.Builder{},
+	}
+	if err := Drain(cfg, runner); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Merge called once.
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+	// WorktreeOpen called once (to get a pane in the base repo).
+	if n := countCalls(runner.calls, "WorktreeOpen"); n != 1 {
+		t.Errorf("WorktreeOpen calls: got %d, want 1", n)
+	}
+	// Two PaneList calls: one for the issue worktree, one for the base workspace.
+	if n := countCalls(runner.calls, "PaneList"); n != 2 {
+		t.Errorf("PaneList calls: got %d, want 2", n)
+	}
+	// Two AgentStart calls: one capataz-work, one fix-conflict.
+	if n := countCalls(runner.calls, "AgentStart"); n != 2 {
+		t.Errorf("AgentStart calls: got %d, want 2", n)
+	}
+	// Two AgentWait calls: one for capataz-work, one for fix-conflict.
+	if n := countCalls(runner.calls, "AgentWait"); n != 2 {
+		t.Errorf("AgentWait calls: got %d, want 2", n)
+	}
+	// WorktreeRemove called once (after fix-conflict done).
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
+		t.Errorf("WorktreeRemove calls: got %d, want 1", n)
+	}
+
+	// Verify the fix-conflict agent name pattern and that it ran in the base repo pane.
+	var fixStartFound bool
+	for _, c := range runner.calls {
+		if c.Op == "AgentStart" && strings.HasPrefix(c.Args[0], "fix-conflict-") {
+			fixStartFound = true
+		}
+	}
+	if !fixStartFound {
+		t.Error("no fix-conflict AgentStart call found")
+	}
+
+	// Verify WorktreeRemove comes last (after fix-conflict wait).
+	var removeIdx, fixWaitIdx int = -1, -1
+	agentWaitCount := 0
+	for i, c := range runner.calls {
+		if c.Op == "AgentWait" {
+			agentWaitCount++
+			if agentWaitCount == 2 {
+				fixWaitIdx = i // second AgentWait is the fix-conflict one
+			}
+		}
+		if c.Op == "WorktreeRemove" {
+			removeIdx = i
+		}
+	}
+	if fixWaitIdx < 0 || removeIdx < 0 {
+		t.Fatalf("missing calls: fixWait=%d WorktreeRemove=%d", fixWaitIdx, removeIdx)
+	}
+	if removeIdx < fixWaitIdx {
+		t.Errorf("WorktreeRemove (%d) must come after fix-conflict AgentWait (%d)", removeIdx, fixWaitIdx)
+	}
+}
+
+// TestMergeBack_ConflictFixBlocked verifies that when the fix-conflict agent
+// ends blocked, dispatchOne surfaces an error and does NOT call WorktreeRemove.
+// (The issue is already resolved; the conflicted merge is stuck in the base repo.)
+func TestMergeBack_ConflictFixBlocked(t *testing.T) {
+	const branch = "capataz/f-01-a"
+	fixName := "fix-conflict-f-01"
+	runner := &fakeRunner{
+		mergeConflicted: map[string]bool{branch: true},
+		agentWaitStatus: map[string]string{
+			fixName: "blocked", // fix-conflict agent blocks
+		},
+	}
+	cfg := Config{
+		Feature:        "f",
+		Concurrency:    0,
+		AgentTimeoutMS: 5000,
+		RepoPath:       "/repo",
+		Out:            &strings.Builder{},
+	}
+	iss := WaveIssue{
+		Number:  "01",
+		Path:    "/repo/.scratch/f/issues/01-a.md",
+		Feature: "f",
+		Status:  "ready-for-agent",
+		Branch:  branch,
+	}
+	// Set up the fake to return "done" for the capataz-work agent.
+	runner.agentWaitStatus["drain-f-01"] = "done"
+
+	logf := func(format string, args ...any) {
+		t.Logf(format, args...)
+	}
+	result := dispatchOne(cfg, runner, iss, logf)
+
+	// Result must be "error" because fix-conflict blocked.
+	if result.Status != "error" {
+		t.Errorf("expected status=error, got %q", result.Status)
+	}
+	if result.Err == nil {
+		t.Error("expected non-nil error, got nil")
+	}
+	// WorktreeRemove must NOT be called when fix-conflict is blocked.
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 0 {
+		t.Errorf("WorktreeRemove must not be called when fix-conflict is blocked; got %d calls", n)
+	}
+}
+
+// TestDryRun_ShowsMergeStep verifies that --dry-run output mentions the merge
+// and cleanup commands introduced in this issue.
+func TestDryRun_ShowsMergeStep(t *testing.T) {
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{twoIssueWave("f")},
+	}
+	var out strings.Builder
+	cfg := Config{
+		Feature:        "f",
+		Concurrency:    0,
+		AgentTimeoutMS: 5000,
+		RepoPath:       "/repo",
+		DryRun:         true,
+		Out:            &out,
+	}
+	if err := Drain(cfg, runner); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := out.String()
+	// Must mention the merge command.
+	if !strings.Contains(output, "git") || !strings.Contains(output, "merge") {
+		t.Errorf("dry-run output missing merge step: %s", output)
+	}
+	// Must mention worktree removal.
+	if !strings.Contains(output, "herdr worktree remove") {
+		t.Errorf("dry-run output missing 'herdr worktree remove': %s", output)
+	}
+	// Must NOT call any real operations.
+	for _, op := range []string{"Claim", "Resolve", "WorktreeCreate", "AgentStart", "AgentWait", "Merge", "WorktreeRemove"} {
+		if n := countCalls(runner.calls, op); n != 0 {
+			t.Errorf("dry-run must not call %s (got %d calls)", op, n)
+		}
+	}
 }

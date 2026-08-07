@@ -27,6 +27,11 @@ type Runner interface {
 	// and returns the workspace_id from the JSON result.
 	WorktreeCreate(branch, cwd string) (workspaceID string, err error)
 
+	// WorktreeOpen runs `herdr worktree open --no-focus --cwd <cwd>` and returns
+	// the workspace_id for an already-existing worktree (the base repo). Used to
+	// obtain a pane in the base checkout when a conflict agent must run there.
+	WorktreeOpen(cwd string) (workspaceID string, err error)
+
 	// PaneList runs `herdr pane list --workspace <workspaceID>` and returns the
 	// first pane_id found in that workspace.
 	PaneList(workspaceID string) (paneID string, err error)
@@ -37,6 +42,17 @@ type Runner interface {
 	// AgentWait runs `herdr agent wait <target> --until done --until blocked --timeout <ms>`.
 	// Returns the final status string ("done", "blocked", "timeout", or error text).
 	AgentWait(target string, timeoutMS int) (status string, err error)
+
+	// Merge runs `git -C <repo> merge --no-ff <branch>`.
+	// Returns (false, nil) on a clean merge. Returns (true, nil) when the merge
+	// left conflicted files in the working tree (mid-merge state, ready for a
+	// fix-conflict agent). Returns (false, err) for all other git failures.
+	Merge(branch, repo string) (conflicted bool, err error)
+
+	// WorktreeRemove runs `herdr worktree remove --workspace <workspaceID>`.
+	// herdr owns the worktree lifecycle, so we use its remove verb rather than
+	// git worktree remove directly.
+	WorktreeRemove(workspaceID string) error
 }
 
 // realRunner executes the actual capataz and herdr subprocesses.
@@ -91,19 +107,34 @@ func (r *realRunner) WorktreeCreate(branch, cwd string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("herdr worktree create --branch %s: %w\noutput: %s", branch, err, out)
 	}
+	return parseWorktreeID(out, "herdr worktree create")
+}
+
+func (r *realRunner) WorktreeOpen(cwd string) (string, error) {
+	args := []string{"worktree", "open", "--no-focus", "--cwd", cwd}
+	out, err := exec.Command(r.herdrBin, args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("herdr worktree open --cwd %s: %w\noutput: %s", cwd, err, out)
+	}
+	return parseWorktreeID(out, "herdr worktree open")
+}
+
+// parseWorktreeID extracts the workspace_id from a herdr worktree create/open
+// JSON response. Shared by WorktreeCreate and WorktreeOpen.
+func parseWorktreeID(out []byte, op string) (string, error) {
 	var result worktreeCreateResult
 	if err := json.Unmarshal(out, &result); err != nil {
-		return "", fmt.Errorf("herdr worktree create: parse output: %w\nraw: %s", err, out)
+		return "", fmt.Errorf("%s: parse output: %w\nraw: %s", op, err, out)
 	}
 	if result.Error != nil {
-		return "", fmt.Errorf("herdr worktree create: %s: %s", result.Error.Code, result.Error.Message)
+		return "", fmt.Errorf("%s: %s: %s", op, result.Error.Code, result.Error.Message)
 	}
 	wsID := result.Result.WorkspaceID
 	if wsID == "" {
 		wsID = result.Result.OpenWorkspaceID
 	}
 	if wsID == "" {
-		return "", fmt.Errorf("herdr worktree create: no workspace_id in output: %s", out)
+		return "", fmt.Errorf("%s: no workspace_id in output: %s", op, out)
 	}
 	return wsID, nil
 }
@@ -209,4 +240,26 @@ func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
 	}
 	// Command succeeded; assume done.
 	return "done", nil
+}
+
+func (r *realRunner) Merge(branch, repo string) (bool, error) {
+	out, err := exec.Command("git", "-C", repo, "merge", "--no-ff", branch).CombinedOutput()
+	if err == nil {
+		return false, nil
+	}
+	// Inspect unmerged files to distinguish a conflict from a hard failure.
+	uf, _ := exec.Command("git", "-C", repo, "diff", "--name-only", "--diff-filter=U").Output()
+	if strings.TrimSpace(string(uf)) != "" {
+		// Conflicted files present — mid-merge state for a fix-conflict agent.
+		return true, nil
+	}
+	return false, fmt.Errorf("git merge %s: %s", branch, strings.TrimSpace(string(out)))
+}
+
+func (r *realRunner) WorktreeRemove(workspaceID string) error {
+	out, err := exec.Command(r.herdrBin, "worktree", "remove", "--workspace", workspaceID).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("herdr worktree remove --workspace %s: %w\n%s", workspaceID, err, out)
+	}
+	return nil
 }

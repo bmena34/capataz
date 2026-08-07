@@ -138,7 +138,7 @@ func dispatchBatch(cfg Config, runner Runner, batch []WaveIssue, logf func(strin
 	return results
 }
 
-// dispatchOne handles a single issue: claim → worktree → agent start → wait → resolve.
+// dispatchOne handles a single issue: claim → worktree → agent start → wait → resolve → merge → cleanup.
 func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...any)) IssueResult {
 	fail := func(status string, err error) IssueResult {
 		return IssueResult{Issue: iss, Status: status, Err: err}
@@ -192,7 +192,69 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		return fail("error", fmt.Errorf("resolve: %w", err))
 	}
 
+	// Step f: merge the worktree branch back into the base repo, then remove
+	// the worktree. Conflict → run a fix-conflict agent first.
+	logf("drain: [%s] merging branch %s into base %s", iss.Number, iss.Branch, cfg.RepoPath)
+	if res := mergeBack(cfg, runner, iss, workspaceID, logf); res != nil {
+		return fail("error", res)
+	}
+
 	return IssueResult{Issue: iss, Status: "done"}
+}
+
+// mergeBack merges iss.Branch into cfg.RepoPath and removes the worktree.
+// On conflict it starts a fix-conflict agent in the base repo, waits for done,
+// then removes the worktree. Returns non-nil only on hard (non-conflict) errors
+// or when the fix-conflict agent itself blocks/times out.
+func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, logf func(string, ...any)) error {
+	conflicted, err := runner.Merge(iss.Branch, cfg.RepoPath)
+	if err != nil {
+		return fmt.Errorf("merge %s: %w", iss.Branch, err)
+	}
+
+	if conflicted {
+		logf("drain: [%s] CONFLICT merging %s — starting fix-conflict agent in base repo", iss.Number, iss.Branch)
+
+		// Open the base repo as a herdr workspace to get a pane there.
+		baseWsID, err := runner.WorktreeOpen(cfg.RepoPath)
+		if err != nil {
+			return fmt.Errorf("open base workspace for fix-conflict: %w", err)
+		}
+		basePaneID, err := runner.PaneList(baseWsID)
+		if err != nil {
+			return fmt.Errorf("pane list base workspace=%s: %w", baseWsID, err)
+		}
+
+		// Start a fix-conflict agent in the base repo (where the merge is in progress).
+		fixName := fmt.Sprintf("fix-conflict-%s-%s", cfg.Feature, iss.Number)
+		fixPrompt := "run /capataz-fix-conflict — resolve the in-progress conflicted merge in this repo and complete it."
+		logf("drain: [%s] starting fix-conflict agent %s in pane %s", iss.Number, fixName, basePaneID)
+		if err := runner.AgentStart(fixName, basePaneID, fixPrompt, cfg.SkipPermissions); err != nil {
+			return fmt.Errorf("fix-conflict agent start: %w", err)
+		}
+
+		logf("drain: [%s] waiting for fix-conflict agent %s (timeout=%dms)", iss.Number, fixName, cfg.AgentTimeoutMS)
+		fixStatus, err := runner.AgentWait(fixName, cfg.AgentTimeoutMS)
+		if err != nil {
+			return fmt.Errorf("fix-conflict agent wait: %w", err)
+		}
+		if fixStatus != "done" {
+			// blocked or timeout: the conflict needs operator attention; surface it.
+			return fmt.Errorf("fix-conflict agent %s for issue %s ended with status %q — operator attention required",
+				fixName, iss.Number, fixStatus)
+		}
+		logf("drain: [%s] fix-conflict agent done — conflict resolved", iss.Number)
+	} else {
+		logf("drain: [%s] clean merge — branch %s landed", iss.Number, iss.Branch)
+	}
+
+	// Remove the worktree (both clean-merge and post-conflict paths).
+	logf("drain: [%s] removing worktree workspace=%s", iss.Number, workspaceID)
+	if err := runner.WorktreeRemove(workspaceID); err != nil {
+		return fmt.Errorf("worktree remove: %w", err)
+	}
+
+	return nil
 }
 
 // printDryRun prints the planned dispatch for the first wave without executing
@@ -216,7 +278,10 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 			agentName, prompt)
 		fmt.Fprintf(cfg.Out, "      cmd[4] : herdr agent wait %s --until done --until blocked --timeout %d\n",
 			agentName, cfg.AgentTimeoutMS)
-		fmt.Fprintf(cfg.Out, "      cmd[5] : capataz issue resolve %s  (on success)\n\n", iss.Path)
+		fmt.Fprintf(cfg.Out, "      cmd[5] : capataz issue resolve %s  (on success)\n", iss.Path)
+		fmt.Fprintf(cfg.Out, "      cmd[6] : git -C %s merge --no-ff %s\n", cfg.RepoPath, iss.Branch)
+		fmt.Fprintf(cfg.Out, "      cmd[7] : herdr worktree remove --workspace <workspace-id>  (clean merge)\n")
+		fmt.Fprintf(cfg.Out, "             : OR start fix-conflict agent + wait + remove  (on conflict)\n\n")
 	}
-	fmt.Fprintf(cfg.Out, "(No worktrees created, no agents started.)\n")
+	fmt.Fprintf(cfg.Out, "(No worktrees created, no agents started, no merges run.)\n")
 }
