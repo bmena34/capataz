@@ -1,0 +1,85 @@
+# capataz-herdr — herdr plugin
+#
+# Brings capataz's workflow layer (.scratch issue backlog, capataz issue CLI,
+# ParallelSafe dispatch waves, drain orchestrator, skills) into herdr as a
+# first-class plugin.
+#
+# Local dev:
+#   herdr plugin link /Users/brandon/code/capataz-herdr
+#   herdr server reload-config   (or restart herdr)
+#
+# CAPATAZ_BIN — override the capataz binary path before `make install`:
+#   export CAPATAZ_BIN=/Users/brandon/code/capataz/capataz
+#
+# Two proven gotchas from the 0.8.0 spike (see experiments/herdr-plugin/README.md):
+#   1. Pane entrypoint paths resolve vs the pane --cwd, NOT the plugin root.
+#      Fix: command = ["sh","-c","exec \"$HERDR_PLUGIN_ROOT/bin/<script>.sh\""]
+#   2. Actions receive focused-pane cwd via HERDR_PLUGIN_CONTEXT_JSON (JSON blob)
+#      not a plain env var; open-issues.sh parses focused_pane_cwd from it.
+
+id = "bmena34.capataz-herdr"
+name = "Capataz"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "capataz's .scratch issue backlog, parallel-safe dispatch waves, and drain orchestrator as a herdr plugin. Overlay issue view, hands-off drain action, worktree-event hook."
+platforms = ["macos", "linux"]
+
+# ---------------------------------------------------------------------------
+# issues — the backlog overlay pane.
+#
+# Opens capataz's daemon-free full-screen issue viewer (`capataz issues`) in
+# an overlay pane hosted by herdr. herdr restores focus when it exits.
+# CAPATAZ_BIN lets a locally-built binary be used before `make install`.
+#
+# Opened via:
+#   herdr plugin pane open --plugin bmena34.capataz-herdr --entrypoint issues --cwd <repo>
+# or via the `issues` action below.
+[[panes]]
+id = "issues"
+title = "Capataz: Backlog"
+placement = "overlay"
+platforms = ["macos", "linux"]
+# Resolve via $HERDR_PLUGIN_ROOT — herdr evaluates a pane's command relative
+# to the pane's --cwd, which is the focused repo dir (not the plugin root).
+# A bare "./bin/issues-ui.sh" would look in the repo and fail.
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/issues-ui.sh\""]
+
+# ---------------------------------------------------------------------------
+# issues action — open the backlog overlay in the focused pane's repo.
+#
+# Bind in herdr's config.toml with type = "plugin_action"; action id is the
+# positional arg (--plugin is optional trailing flag):
+#   herdr plugin action invoke issues
+[[actions]]
+id = "issues"
+title = "Capataz: Open Backlog"
+platforms = ["macos", "linux"]
+command = ["./bin/open-issues.sh"]
+
+# ---------------------------------------------------------------------------
+# drain action — invoke the dispatch orchestrator.
+#
+# The orchestrator binary (cmd/drain) is implemented in issue 03. This entry
+# declares the full action surface so later slices don't need to touch this
+# file. The binary at ./bin/drain is the built output of cmd/drain.
+#
+# Usage:
+#   herdr plugin action invoke drain
+[[actions]]
+id = "drain"
+title = "Capataz: Drain Backlog"
+platforms = ["macos", "linux"]
+# issue 03 implements the orchestrator binary at ./bin/drain.
+command = ["./bin/drain"]
+
+# ---------------------------------------------------------------------------
+# worktree.created event hook.
+#
+# herdr fires this when it creates a git worktree. In the drain loop capataz
+# uses this to detect the new worktree and dispatch a capataz-work subagent
+# into it. The current handler (on-worktree.sh) logs the event JSON — the
+# full dispatch logic lands with the orchestrator in issue 03.
+[[events]]
+on = "worktree.created"
+platforms = ["macos", "linux"]
+command = ["./bin/on-worktree.sh"]

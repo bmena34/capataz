@@ -1,0 +1,11 @@
+# Built orchestrator binary (issue 03)
+bin/drain
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
