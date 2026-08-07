@@ -25,6 +25,18 @@ description = "capataz's .scratch issue backlog, parallel-safe dispatch waves, a
 platforms = ["macos", "linux"]
 
 # ---------------------------------------------------------------------------
+# Build step — compiles the drain orchestrator binary.
+#
+# herdr runs this once after `herdr plugin install` (or `herdr plugin link .`
+# when you explicitly trigger a build). The result is ./bin/drain, which the
+# `drain` action below invokes. bin/drain is gitignored (build artifact).
+#
+# This repo requires Go — there is no prebuilt-release fallback.
+[[build]]
+platforms = ["macos", "linux"]
+command = ["sh", "scripts/build.sh"]
+
+# ---------------------------------------------------------------------------
 # issues — the backlog overlay pane.
 #
 # Opens capataz's daemon-free full-screen issue viewer (`capataz issues`) in

@@ -1,5 +1,6 @@
-# Built orchestrator binary (issue 03)
+# Built orchestrator binary (produced by scripts/build.sh)
 bin/drain
+drain
 
 # macOS
 .DS_Store
