@@ -65,7 +65,17 @@ func Drain(cfg Config, runner Runner) error {
 	logf("drain: feature=%s concurrency=%d skip_permissions=%v dry_run=%v",
 		cfg.Feature, cfg.Concurrency, cfg.SkipPermissions, cfg.DryRun)
 
+	// failed tracks issue paths that failed this run so a permanently-failing
+	// issue (still ready-for-agent because capataz-work never claimed it) is not
+	// re-dispatched forever. maxRounds is a hard backstop.
+	const maxRounds = 100
+	failed := map[string]int{}
+
 	for round := 1; ; round++ {
+		if round > maxRounds {
+			return fmt.Errorf("drain stopped: exceeded %d rounds (possible loop)", maxRounds)
+		}
+
 		raw, err := runner.Waves(cfg.Feature, cfg.RepoPath)
 		if err != nil {
 			return fmt.Errorf("round %d: waves: %w", round, err)
@@ -81,43 +91,46 @@ func Drain(cfg Config, runner Runner) error {
 			return nil
 		}
 
-		logf("drain: round %d — wave has %d total issue(s), dispatching %d",
-			round, len(waves.Waves[0]), len(batch))
+		// Skip issues that already failed this run — otherwise a still-ready
+		// failing issue would spin the loop (worktree-create collides forever).
+		var todo []WaveIssue
+		for _, iss := range batch {
+			if failed[iss.Path] == 0 {
+				todo = append(todo, iss)
+			}
+		}
+		if len(todo) == 0 {
+			logf("drain: no progress — %d dispatchable issue(s) already failed; stopping", len(batch))
+			return fmt.Errorf("drain stopped: %d issue(s) failed and remain undispatched", len(failed))
+		}
 
 		if cfg.DryRun {
-			printDryRun(cfg, batch, round)
-			// In dry-run, don't loop — just print the first wave and exit.
+			logf("drain: round %d — dispatching %d issue(s) (dry run)", round, len(todo))
+			printDryRun(cfg, todo, round)
 			return nil
 		}
 
-		results := dispatchBatch(cfg, runner, batch, logf)
+		logf("drain: round %d — %d dispatchable, dispatching %d", round, len(batch), len(todo))
+		results := dispatchBatch(cfg, runner, todo, logf)
 
-		// Surface any blocked/timeout/error outcomes for operator attention.
-		// The loop continues regardless so remaining issues (future waves) are
-		// not abandoned because one issue stalled.
-		allDone := true
+		// Record outcomes. done issues drop from the next waves scan (capataz-work
+		// resolved them); anything else is recorded as failed so it isn't retried.
 		for _, res := range results {
 			switch res.Status {
 			case "done":
 				logf("drain: [%s] done", res.Issue.Number)
 			case "blocked":
-				allDone = false
+				failed[res.Issue.Path]++
 				logf("drain: [%s] BLOCKED — operator attention required (path: %s)",
 					res.Issue.Number, res.Issue.Path)
 			case "timeout":
-				allDone = false
+				failed[res.Issue.Path]++
 				logf("drain: [%s] TIMEOUT after %dms — operator attention required (path: %s)",
 					res.Issue.Number, cfg.AgentTimeoutMS, res.Issue.Path)
 			default:
-				allDone = false
+				failed[res.Issue.Path]++
 				logf("drain: [%s] ERROR: %v", res.Issue.Number, res.Err)
 			}
-		}
-
-		if !allDone {
-			// Some issues were blocked/timed out. Re-scan: capataz issue waves
-			// will omit resolved issues and we can pick up the next wave.
-			logf("drain: some issues need attention — re-scanning")
 		}
 	}
 }
@@ -151,18 +164,40 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// issue — capataz-work claims it itself and stops if it's already claimed, so
 	// pre-claiming here would make the agent refuse to do the work.
 	logf("drain: [%s] creating worktree branch=%s", iss.Number, iss.Branch)
-	workspaceID, err := runner.WorktreeCreate(iss.Branch, cfg.RepoPath)
+	workspaceID, checkoutPath, err := runner.WorktreeCreate(iss.Branch, cfg.RepoPath)
 	if err != nil {
 		return fail("error", fmt.Errorf("worktree create: %w", err))
+	}
+
+	// From here a hard failure must tear down the worktree + branch, so a re-scan
+	// doesn't collide with a half-created worktree. (blocked/timeout are NOT hard
+	// failures — those leave the worktree in place for the operator to attend.)
+	failClean := func(status string, err error) IssueResult {
+		logf("drain: [%s] cleaning up worktree %s after failure", iss.Number, workspaceID)
+		if e := runner.WorktreeRemove(workspaceID); e != nil {
+			logf("drain: [%s] worktree remove failed: %v", iss.Number, e)
+		}
+		if e := runner.DeleteBranch(cfg.RepoPath, iss.Branch); e != nil {
+			logf("drain: [%s] branch delete failed: %v", iss.Number, e)
+		}
+		return fail(status, err)
+	}
+
+	// Step b: pre-seed Claude folder-trust for the fresh worktree dir, else the
+	// agent hangs at the "trust this folder?" prompt (which
+	// --dangerously-skip-permissions does not bypass) and does no work.
+	logf("drain: [%s] trusting worktree dir %s", iss.Number, checkoutPath)
+	if err := runner.TrustDir(checkoutPath); err != nil {
+		return failClean("error", fmt.Errorf("trust dir: %w", err))
 	}
 
 	// Resolve the pane ID in the new workspace.
 	paneID, err := runner.PaneList(workspaceID)
 	if err != nil {
-		return fail("error", fmt.Errorf("pane list workspace=%s: %w", workspaceID, err))
+		return failClean("error", fmt.Errorf("pane list workspace=%s: %w", workspaceID, err))
 	}
 
-	// Step b: start a Claude agent running /capataz-work in the worktree pane.
+	// Step c: start a Claude agent running /capataz-work in the worktree pane.
 	// The minimal prompt tells capataz-work the absolute issue path; it claims,
 	// implements, commits on the branch, and resolves, self-detecting
 	// isolated-worktree mode from the pane's cwd.
@@ -170,31 +205,31 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	prompt := fmt.Sprintf("run /capataz-work on %s in this worktree", iss.Path)
 	logf("drain: [%s] starting agent %s in pane %s", iss.Number, agentName, paneID)
 	if err := runner.AgentStart(agentName, paneID, prompt, cfg.SkipPermissions); err != nil {
-		return fail("error", fmt.Errorf("agent start: %w", err))
+		return failClean("error", fmt.Errorf("agent start: %w", err))
 	}
 
-	// Step c: wait for the agent on the unfocused pane. blocked/timeout are
-	// needs-operator-attention: surface them and do not merge.
+	// Step d: wait for the agent on the unfocused pane. blocked/timeout are
+	// needs-operator-attention: surface them, leave the worktree, do not merge.
 	logf("drain: [%s] waiting for agent %s (timeout=%dms)", iss.Number, agentName, cfg.AgentTimeoutMS)
 	status, err := runner.AgentWait(agentName, cfg.AgentTimeoutMS)
 	if err != nil {
-		return fail("error", fmt.Errorf("agent wait: %w", err))
+		return failClean("error", fmt.Errorf("agent wait: %w", err))
 	}
 	if status != "done" {
-		return fail(status, nil)
+		return fail(status, nil) // leave the worktree for the operator to inspect
 	}
 
-	// Step d: verify the agent actually produced work. capataz-work commits on the
+	// Step e: verify the agent actually produced work. capataz-work commits on the
 	// branch; if the branch has no commits ahead of base, the agent did nothing
 	// (e.g. it refused an already-claimed issue, or errored). An empty branch would
 	// otherwise merge as a no-op ("already up to date") and look like success, so
-	// treat zero commits as a failed issue — surface it, don't merge.
+	// treat zero commits as a failed issue — clean up, don't merge.
 	ahead, err := runner.CommitsAhead(cfg.RepoPath, iss.Branch)
 	if err != nil {
-		return fail("error", fmt.Errorf("verify commits on %s: %w", iss.Branch, err))
+		return failClean("error", fmt.Errorf("verify commits on %s: %w", iss.Branch, err))
 	}
 	if ahead == 0 {
-		return fail("error", fmt.Errorf("agent produced no commits on %s — capataz-work did not implement the issue", iss.Branch))
+		return failClean("error", fmt.Errorf("agent produced no commits on %s — capataz-work did not implement the issue", iss.Branch))
 	}
 	logf("drain: [%s] verified %d commit(s) on %s", iss.Number, ahead, iss.Branch)
 

@@ -28,8 +28,15 @@ type Runner interface {
 	CommitsAhead(repo, branch string) (int, error)
 
 	// WorktreeCreate runs `herdr worktree create --no-focus --branch <branch> --cwd <cwd>`
-	// and returns the workspace_id from the JSON result.
-	WorktreeCreate(branch, cwd string) (workspaceID string, err error)
+	// and returns the new workspace_id and the worktree's on-disk checkout path
+	// (needed to pre-seed folder-trust before starting the agent).
+	WorktreeCreate(branch, cwd string) (workspaceID, checkoutPath string, err error)
+
+	// TrustDir pre-seeds Claude folder-trust for a worktree dir (capataz trust-dir).
+	TrustDir(path string) error
+
+	// DeleteBranch deletes <branch> in repo — cleanup after a failed dispatch.
+	DeleteBranch(repo, branch string) error
 
 	// WorktreeOpen runs `herdr worktree open --no-focus --cwd <cwd>` and returns
 	// the workspace_id for an already-existing worktree (the base repo). Used to
@@ -100,9 +107,11 @@ type worktreeCreateResult struct {
 		RootPane struct {
 			WorkspaceID string `json:"workspace_id"`
 			PaneID      string `json:"pane_id"`
+			Cwd         string `json:"cwd"`
 		} `json:"root_pane"`
 		Worktree struct {
 			OpenWorkspaceID string `json:"open_workspace_id"`
+			CheckoutPath    string `json:"checkout_path"`
 		} `json:"worktree"`
 	} `json:"result"`
 	Error *struct {
@@ -111,13 +120,47 @@ type worktreeCreateResult struct {
 	} `json:"error"`
 }
 
-func (r *realRunner) WorktreeCreate(branch, cwd string) (string, error) {
+func (r *realRunner) WorktreeCreate(branch, cwd string) (workspaceID, checkoutPath string, err error) {
 	args := []string{"worktree", "create", "--no-focus", "--branch", branch, "--cwd", cwd}
 	out, err := exec.Command(r.herdrBin, args...).Output()
 	if err != nil {
-		return "", fmt.Errorf("herdr worktree create --branch %s: %w\noutput: %s", branch, err, out)
+		return "", "", fmt.Errorf("herdr worktree create --branch %s: %w\noutput: %s", branch, err, out)
 	}
-	return parseWorktreeID(out, "herdr worktree create")
+	wsID, err := parseWorktreeID(out, "herdr worktree create")
+	if err != nil {
+		return "", "", err
+	}
+	var result worktreeCreateResult
+	_ = json.Unmarshal(out, &result) // already parsed cleanly above
+	path := result.Result.Worktree.CheckoutPath
+	if path == "" {
+		path = result.Result.RootPane.Cwd
+	}
+	if path == "" {
+		return "", "", fmt.Errorf("herdr worktree create: no checkout path in output: %s", out)
+	}
+	return wsID, path, nil
+}
+
+// TrustDir pre-seeds Claude folder-trust for a worktree dir via
+// `capataz trust-dir <path>` so the dispatched agent skips the "trust this
+// folder?" prompt (which --dangerously-skip-permissions does not bypass).
+func (r *realRunner) TrustDir(path string) error {
+	out, err := exec.Command(r.capatazBin, "trust-dir", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("capataz trust-dir %s: %w\n%s", path, err, out)
+	}
+	return nil
+}
+
+// DeleteBranch deletes <branch> in repo (git -C repo branch -D). Used to clean
+// up after a failed dispatch so a re-scan doesn't collide with a stale branch.
+func (r *realRunner) DeleteBranch(repo, branch string) error {
+	out, err := exec.Command("git", "-C", repo, "branch", "-D", branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git -C %s branch -D %s: %w\n%s", repo, branch, err, out)
+	}
+	return nil
 }
 
 func (r *realRunner) WorktreeOpen(cwd string) (string, error) {

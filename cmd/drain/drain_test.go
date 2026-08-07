@@ -192,9 +192,19 @@ func (f *fakeRunner) CommitsAhead(repo, branch string) (int, error) {
 	return 1, nil // default: the agent produced work
 }
 
-func (f *fakeRunner) WorktreeCreate(branch, cwd string) (string, error) {
+func (f *fakeRunner) WorktreeCreate(branch, cwd string) (string, string, error) {
 	f.record("WorktreeCreate", branch, cwd)
-	return "ws-fake-" + branch, nil
+	return "ws-fake-" + branch, "/fake/worktrees/" + branch, nil
+}
+
+func (f *fakeRunner) TrustDir(path string) error {
+	f.record("TrustDir", path)
+	return nil
+}
+
+func (f *fakeRunner) DeleteBranch(repo, branch string) error {
+	f.record("DeleteBranch", repo, branch)
+	return nil
 }
 
 func (f *fakeRunner) WorktreeOpen(cwd string) (string, error) {
@@ -485,6 +495,25 @@ func TestDrain_SkipPermissionsFlag(t *testing.T) {
 	// --dangerously-skip-permissions; here we just verify the code path ran.
 }
 
+// TestDrain_StopsOnRepeatedFailure covers issue 10: an issue that keeps failing
+// while staying dispatchable must be tried once and then the drain must stop —
+// not loop forever (the live run spun 2007 rounds).
+func TestDrain_StopsOnRepeatedFailure(t *testing.T) {
+	wave := []byte(`{"feature":"f","waves":[[{"number":"01","path":"/repo/.scratch/f/issues/01-a.md","feature":"f","status":"ready-for-agent","branch":"b1"}]]}`)
+	runner := &fakeRunner{
+		wavesResponses:  [][]byte{wave}, // last entry repeats forever
+		agentWaitStatus: map[string]string{"drain-f-01": "blocked"},
+	}
+	cfg := Config{Feature: "f", Concurrency: 0, AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
+
+	if err := Drain(cfg, runner); err == nil {
+		t.Fatal("expected drain to stop with an error on repeated failure, got nil")
+	}
+	if n := countCalls(runner.calls, "AgentStart"); n != 1 {
+		t.Errorf("AgentStart calls: got %d, want 1 (a failed issue must not be retried)", n)
+	}
+}
+
 // TestDispatchOne_EmptyBranchFailsNoMerge covers the live-found bug: the agent
 // reaches "done" but produced no commits (e.g. capataz-work refused an
 // already-claimed issue). The drain must treat that as a failure — no merge, no
@@ -505,8 +534,13 @@ func TestDispatchOne_EmptyBranchFailsNoMerge(t *testing.T) {
 	if n := countCalls(runner.calls, "Merge"); n != 0 {
 		t.Errorf("Merge must not be called for an empty branch; got %d", n)
 	}
-	if n := countCalls(runner.calls, "WorktreeRemove"); n != 0 {
-		t.Errorf("WorktreeRemove must not be called for an empty branch; got %d", n)
+	// The failed dispatch must clean up its worktree + branch so a re-scan
+	// doesn't collide (issue 10).
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
+		t.Errorf("WorktreeRemove (cleanup) calls: got %d, want 1", n)
+	}
+	if n := countCalls(runner.calls, "DeleteBranch"); n != 1 {
+		t.Errorf("DeleteBranch (cleanup) calls: got %d, want 1", n)
 	}
 }
 
