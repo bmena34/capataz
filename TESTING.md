@@ -27,14 +27,16 @@ capataz usage                # new — should print a Session/Weekly gauge
 **Expected:** all three new surfaces resolve; `capataz usage` prints a gauge.
 Once this is done you can drop the `CAPATAZ_BIN=…` override used during dev.
 
-### 0.2 Skills (already installed — verify)
+### 0.2 Skills + agents (herdr-only install)
 ```sh
+capataz install --herdr              # skills + agents + config, NO hooks/daemon
 ls ~/.claude/skills | grep capataz   # capataz-work, capataz-fix-conflict, …
 ```
 The dispatched agents run `/capataz-work` and `/capataz-fix-conflict`, so these
-must exist. They're already present; `capataz install` re-copies the latest if
-needed (note: `capataz install` also wires capataz's own hooks + daemon, which
-the herdr flow doesn't use — harmless, they just idle).
+must exist. `capataz install --herdr` lays down only what the herdr flow needs
+(skills, per-role agents, default config) and skips capataz's own hook wiring +
+launchd daemon. (Plain `capataz install` also works but additionally wires the
+tmux/launchd machinery, which just idles under herdr.)
 
 ### 0.3 Install herdr's Claude state integration  ← REQUIRED, currently missing
 ```sh

@@ -22,7 +22,7 @@ This plugin wires the two together: herdr runs the substrate; capataz provides t
 
 - [herdr](https://herdr.dev) >= 0.8.0
 - **herdr's Claude integration installed** — `herdr integration install claude`. This is the hook that lets herdr detect Claude agent state; the drain's `herdr agent wait --until done` depends on it. **Without it the drain hangs.**
-- [capataz](https://github.com/bmena34/capataz) on PATH (or set `CAPATAZ_BIN`), built from a version that has the `issues`, `issue waves`, `usage`, and `trust-dir` subcommands (the `herdr-port` branch / once merged, `main`). The plugin shells out to all four.
+- [capataz](https://github.com/bmena34/capataz) on PATH (or set `CAPATAZ_BIN`), built from a version that has the `issues`, `issue waves`, `usage`, and `trust-dir` subcommands (the `herdr-port` branch / once merged, `main`). The plugin shells out to all four. After building the binary, run **`capataz install --herdr`** once — the lean, herdr-only install that lays down just the skills + agents + default config the dispatched agents need (**no** capataz hooks, **no** launchd daemon; herdr owns the substrate). Plain `capataz install` also works but drags in capataz's own tmux/launchd machinery you don't need under herdr.
 - Go >= 1.22 (to build the drain orchestrator — see Build below)
 
 ## Operator runbook
