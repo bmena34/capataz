@@ -58,32 +58,34 @@ herdr plugin list
 # should show: bmena34.capataz-herdr  enabled
 ```
 
-### 4. Bind the actions in herdr's config.toml
+### 4. Bind the actions in herdr's config.toml (`~/.config/herdr/config.toml`)
 
-Add keybinds with `type = "plugin_action"` in your herdr `config.toml`:
+A plugin-action bind is a `[[keys.command]]` entry with `type = "plugin_action"`
+and a single `command` of the form `<plugin-id>.<action-id>`. Trigger it with the
+herdr prefix (default `ctrl+b`) then the key — e.g. `ctrl+b` then `i`.
 
 ```toml
-# open the backlog overlay in the focused pane's repo
-[[keybinds]]
-key = "ctrl+shift+i"
+# open the backlog overlay in the focused pane's repo  →  ctrl+b i
+[[keys.command]]
+key = "prefix+i"
 type = "plugin_action"
-plugin = "bmena34.capataz-herdr"
-action = "issues"
+command = "bmena34.capataz-herdr.issues"
+description = "capataz: open backlog"
 
-# open the plan-usage overlay
-[[keybinds]]
-key = "ctrl+shift+u"
+# open the plan-usage overlay  →  ctrl+b u
+[[keys.command]]
+key = "prefix+u"
 type = "plugin_action"
-plugin = "bmena34.capataz-herdr"
-action = "usage"
-
-# run the drain orchestrator (hands-off, dispatches capataz-work agents)
-[[keybinds]]
-key = "ctrl+shift+d"
-type = "plugin_action"
-plugin = "bmena34.capataz-herdr"
-action = "drain"
+command = "bmena34.capataz-herdr.usage"
+description = "capataz: plan usage"
 ```
+
+Then `herdr server reload-config` (or restart) to apply, and `herdr config check`
+to validate.
+
+> The **`drain`** action is intentionally *not* keybound: it needs a feature slug
+> and `--repo`, which a bare action can't supply. Run it from a shell instead —
+> see [Run a drain](#6-run-a-drain).
 
 ### 5. Open the backlog overlay
 
