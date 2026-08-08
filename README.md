@@ -1,6 +1,6 @@
 # capataz-herdr
 
-A [herdr](https://herdr.io) plugin that brings capataz's workflow layer into herdr as a first-class plugin.
+A [herdr](https://herdr.dev) plugin that brings capataz's workflow layer into herdr as a first-class plugin.
 
 ## The two-binary story
 
@@ -13,14 +13,16 @@ This plugin wires the two together: herdr runs the substrate; capataz provides t
 ## What this plugin provides
 
 - **Backlog overlay** — `capataz issues` rendered inside a herdr-managed overlay pane, scoped to the focused pane's repo (reads the repo's `.scratch` backlog). Interactive: cursor movement, status badges, feature grouping. Dismissed with `q`.
-- **Open-backlog action** — keyboard-bindable herdr action that opens the overlay in the currently-focused pane's repo cwd.
-- **Drain action** — invokes the dispatch orchestrator (`cmd/drain`): scans the feature backlog, takes a parallel-safe wave of ready issues, dispatches `capataz-work` subagents into herdr worktrees, and merges back.
+- **Usage overlay** — `capataz usage` rendered in an overlay pane: the plan-usage gauge (herdr has no equivalent).
+- **Open-backlog / usage actions** — keyboard-bindable herdr actions that open those overlays in the focused pane's repo cwd.
+- **Drain action** — invokes the dispatch orchestrator (`cmd/drain`): scans the feature backlog, takes a parallel-safe wave of `ready-for-agent` issues, and for each spins up a git worktree, dispatches a fresh `capataz-work` **agent** into it (default posture — no bypass-permissions), waits for it to finish, verifies it committed, and merges the branch back (resolving conflicts with a `capataz-fix-conflict` agent when needed). Loops until the backlog drains.
 - **`worktree.created` event hook** — herdr fires this when it creates a git worktree; the drain loop uses it to coordinate dispatch.
 
 ## Requirements
 
-- [herdr](https://herdr.io) >= 0.8.0
-- [capataz](https://github.com/bmena34/capataz) installed and on PATH (or set `CAPATAZ_BIN`)
+- [herdr](https://herdr.dev) >= 0.8.0
+- **herdr's Claude integration installed** — `herdr integration install claude`. This is the hook that lets herdr detect Claude agent state; the drain's `herdr agent wait --until done` depends on it. **Without it the drain hangs.**
+- [capataz](https://github.com/bmena34/capataz) on PATH (or set `CAPATAZ_BIN`), built from a version that has the `issues`, `issue waves`, `usage`, and `trust-dir` subcommands (the `herdr-port` branch / once merged, `main`). The plugin shells out to all four.
 - Go >= 1.22 (to build the drain orchestrator — see Build below)
 
 ## Operator runbook
@@ -68,7 +70,14 @@ type = "plugin_action"
 plugin = "bmena34.capataz-herdr"
 action = "issues"
 
-# run the drain orchestrator (hands-off, dispatches capataz-work subagents)
+# open the plan-usage overlay
+[[keybinds]]
+key = "ctrl+shift+u"
+type = "plugin_action"
+plugin = "bmena34.capataz-herdr"
+action = "usage"
+
+# run the drain orchestrator (hands-off, dispatches capataz-work agents)
 [[keybinds]]
 key = "ctrl+shift+d"
 type = "plugin_action"
@@ -89,12 +98,32 @@ The overlay opens in the focused pane's repo cwd. Navigate with `j`/`k`, dismiss
 
 ### 6. Run a drain
 
+The drain orchestrator takes a feature slug and the repo it lives in, so run the
+binary directly (the bound `drain` action is a convenience wrapper; the binary is
+the source of truth):
+
 ```sh
-# via keybind (configured above), or from the CLI:
-herdr plugin action invoke drain
+# concurrency N runs up to N parallel-safe issues at once; default 3.
+./bin/drain --repo /path/to/repo <feature>
+./bin/drain --repo /path/to/repo --concurrency 2 <feature>
+
+# preview without doing anything:
+./bin/drain --dry-run --repo /path/to/repo <feature>
 ```
 
-The drain orchestrator scans the feature backlog, picks a parallel-safe wave of `ready-for-agent` issues, dispatches `capataz-work` subagents into herdr worktrees (one per issue), and merges each resolved branch back. It loops until the backlog is drained.
+For each `ready-for-agent` issue it: creates a git worktree, **pre-trusts it**
+(`capataz trust-dir`, so the agent skips Claude's folder-trust prompt), starts a
+fresh `capataz-work` **agent** in default posture (`--allowedTools`, no bypass
+screen — a permission prompt surfaces as a `blocked` agent), waits for it to
+finish, **verifies it actually committed**, then merges the branch back
+(serialized so concurrent merges don't race). A conflicting merge-back spins up a
+`capataz-fix-conflict` agent in the base repo, and the drain verifies the merge
+actually completed before moving on. It re-scans and loops until the backlog is
+drained, cleaning up worktrees and merged branches as it goes.
+
+Flags: `--skip-perms` opts into `--dangerously-skip-permissions` instead of the
+default allowlist (needs the one-time bypass-permissions screen accepted first).
+`CAPATAZ_BIN` overrides the `capataz` binary path.
 
 ### Invoke actions from the CLI
 
@@ -134,8 +163,8 @@ herdr plugin unlink bmena34.capataz-herdr
 | issue view (`internal/tui issueview.go`) | repackaged as the `[[panes]] issues` overlay (real Bubble Tea, not a plain list) |
 | dashboard / sidebar | dropped — herdr renders the agent panel |
 | `tmux.go` | rewritten → herdr socket CLI (`herdr worktree create`, `herdr agent prompt`) |
-| hook → daemon → dashboard broadcast | simplified → hook calls `herdr pane report-agent`; broadcast half dropped |
-| usage gauge | retained as a future pane/statusline (herdr has no equivalent today) |
+| hook → daemon → dashboard broadcast | dropped entirely — herdr's own Claude integration (`herdr integration install claude`) provides agent state; capataz doesn't feed or override it |
+| usage gauge | retained as the `usage` overlay pane (`capataz usage`); herdr has no equivalent |
 | launchd daemon + SQLite persistence | dropped — herdr owns persistence |
 | `capataz-drain` skill (orchestrator logic) | replaced by `cmd/drain` Go binary (this repo's dispatch engine) |
 
@@ -153,14 +182,22 @@ cmd/
 bin/
   issues-ui.sh      — pane entrypoint: runs `capataz issues` in the pane cwd
   open-issues.sh    — action: opens the issues overlay in the focused repo
+  usage-ui.sh       — pane entrypoint: runs `capataz usage`
+  open-usage.sh     — action: opens the usage overlay in the focused repo
   on-worktree.sh    — event hook: logs worktree.created events
   drain             — built orchestrator binary (gitignored, produced by build.sh)
 ```
 
-## Status / not yet done
+## Status
 
-- **Conflict path needs a live shakeout.** When a drain subagent's branch conflicts on merge-back, the orchestrator falls back to a manual-resolution path. This has not yet been exercised end-to-end against a real conflict; hardening is tracked as a needs-triage issue.
-- **Publishing to `herdr plugin install` is deferred.** `herdr plugin install bmena34/capataz-herdr` will work once the repo is public. For now use `herdr plugin link .` from a local checkout.
+The hands-off drain is validated end to end against real Claude agents — both the
+**clean path** (worktrees → agents → verified merges) and the **conflict path** (a
+real merge conflict resolved by a `capataz-fix-conflict` agent in the base repo,
+verified complete). Default posture, no bypass-permissions mode.
+
+- **Publishing to `herdr plugin install` is deferred.** This repo is private, so
+  `herdr plugin install bmena34/capataz-herdr` won't work yet — use `herdr plugin
+  link .` from a local checkout. It'll work once the repo is made public.
 
 ## Proven gotchas (herdr 0.8.0)
 

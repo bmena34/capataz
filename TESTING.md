@@ -166,33 +166,45 @@ did the merge land? any step need manual nudging? Then try again **without
 
 ---
 
-## Stage 6 — Live drain, CONFLICT path (issue 07 territory — expect breakage)
+## Stage 6 — Live drain, CONFLICT path (validated)
 
-Force a merge conflict by making two issues edit the **same** file:
+To force a merge conflict you need two issues that both edit the **same** file
+but are treated as **parallel-safe** (so they're dispatched in one wave from the
+same base). Give them **disjoint (deliberately-wrong) `Touches`** — that's the
+real-world trigger: a mis-declared `Touches` where two "parallel-safe" issues
+actually collide.
+
 ```sh
-cd ~/tmp/drain-test
-capataz issue new drain-conflict "Bump version to 2" \
-  --body "Set the single line of VERSION to: 2"
-capataz issue new drain-conflict "Bump version to 3" \
-  --body "Set the single line of VERSION to: 3"
-printf '1\n' > VERSION && git add VERSION && git commit -q -m "seed VERSION"
+mkdir -p ~/tmp/conflict-drain && cd ~/tmp/conflict-drain
+git init -q && printf '1\n' > VERSION && git add VERSION && git commit -q -m "seed VERSION=1"
+capataz issue new conflict-demo "Set VERSION to 2" \
+  --body "Overwrite VERSION so it contains exactly one line: 2"
+capataz issue new conflict-demo "Set VERSION to 3" \
+  --body "Overwrite VERSION so it contains exactly one line: 3"
+# edit each issue: give 01 'Touches: alpha.txt' and 02 'Touches: beta.txt'
+# (disjoint → one wave; both actually edit VERSION → conflict on merge-back)
+capataz issue waves conflict-demo --json   # confirm: one wave of 2
 ```
-Give BOTH issues `Touches: VERSION` so they land in the **same wave** but their
-branches will conflict on merge-back. Run:
+Run with concurrency 2 so both dispatch from the same base:
 ```sh
 cd ~/code/capataz-herdr
-./bin/drain --repo ~/tmp/drain-test --skip-perms drain-conflict
+./bin/drain --repo ~/tmp/conflict-drain --concurrency 2 conflict-demo
 ```
-**Expected (UNVERIFIED — this is what issue 07 tracks):** first branch merges
-clean; second conflicts → drain starts a `capataz-fix-conflict` agent in the
-base repo → it resolves and completes the merge → worktree removed.
+**Expected (validated):** first branch merges clean; the second **conflicts** →
+drain opens the base repo as a herdr workspace, starts a `capataz-fix-conflict`
+agent there, waits, **verifies the merge actually completed** (no `MERGE_HEAD`,
+no markers), then removes the worktree and closes the base workspace.
 
-**Likely failure points to record precisely (these feed issue 07):**
-- `herdr worktree remove` refusing without `--force`
-- `herdr worktree open` output not parsed as expected (base-repo pane not found)
-- wrong verb for getting a base-repo pane (`worktree open` vs `workspace create`)
-- fix-conflict agent never reaching `done`
-Capture the exact drain log lines + `herdr agent list` state when it stalls.
+**Verify:**
+```sh
+cd ~/tmp/conflict-drain
+git status                 # clean, no MERGE_HEAD
+cat VERSION                # no conflict markers
+git log --oneline          # a merge commit for EACH branch
+capataz issue list         # both resolved
+git branch                 # just master (merged branches cleaned up)
+herdr pane list            # no leftover base workspaces
+```
 
 ---
 
