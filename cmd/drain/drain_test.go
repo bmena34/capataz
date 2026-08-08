@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -161,11 +162,16 @@ type fakeRunner struct {
 	// Absent/nil → default 1 (the agent produced work).
 	commitsAhead map[string]int
 
+	mu    sync.Mutex
 	calls []fakeCall
 }
 
 func (f *fakeRunner) record(op string, args ...string) {
+	// dispatchBatch runs dispatchOne concurrently, so record is called from
+	// multiple goroutines — guard the shared slice.
+	f.mu.Lock()
 	f.calls = append(f.calls, fakeCall{Op: op, Args: args})
+	f.mu.Unlock()
 }
 
 func (f *fakeRunner) Waves(feature, repo string) ([]byte, error) {
@@ -207,8 +213,8 @@ func (f *fakeRunner) DeleteBranch(repo, branch string) error {
 	return nil
 }
 
-func (f *fakeRunner) WorktreeOpen(cwd string) (string, error) {
-	f.record("WorktreeOpen", cwd)
+func (f *fakeRunner) OpenBaseWorkspace(cwd string) (string, error) {
+	f.record("OpenBaseWorkspace", cwd)
 	return "ws-base-" + cwd, nil
 }
 
@@ -532,7 +538,7 @@ func TestDispatchOne_EmptyBranchFailsNoMerge(t *testing.T) {
 	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
 	iss := WaveIssue{Number: "01", Path: "/repo/.scratch/f/issues/01-a.md", Feature: "f", Status: "ready-for-agent", Branch: branch}
 
-	result := dispatchOne(cfg, runner, iss, func(string, ...any) {})
+	result := dispatchOne(cfg, runner, iss, func(string, ...any) {}, &sync.Mutex{})
 	if result.Status != "error" {
 		t.Errorf("expected status=error for empty branch, got %q", result.Status)
 	}
@@ -583,9 +589,9 @@ func TestMergeBack_CleanMerge(t *testing.T) {
 	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
 		t.Errorf("WorktreeRemove calls: got %d, want 1", n)
 	}
-	// WorktreeOpen must NOT be called on a clean merge.
-	if n := countCalls(runner.calls, "WorktreeOpen"); n != 0 {
-		t.Errorf("WorktreeOpen calls: got %d, want 0 (no conflict)", n)
+	// OpenBaseWorkspace must NOT be called on a clean merge.
+	if n := countCalls(runner.calls, "OpenBaseWorkspace"); n != 0 {
+		t.Errorf("OpenBaseWorkspace calls: got %d, want 0 (no conflict)", n)
 	}
 	// Fix-conflict agent must NOT be started.
 	agentStarts := 0
@@ -623,7 +629,7 @@ func TestMergeBack_CleanMerge(t *testing.T) {
 }
 
 // TestMergeBack_ConflictedMerge verifies the conflict path: agent done →
-// Merge (conflict) → WorktreeOpen (base repo) → PaneList → fix-conflict
+// Merge (conflict) → OpenBaseWorkspace (base repo) → PaneList → fix-conflict
 // AgentStart → AgentWait → WorktreeRemove.
 func TestMergeBack_ConflictedMerge(t *testing.T) {
 	const branch = "capataz/f-01-a"
@@ -652,9 +658,9 @@ func TestMergeBack_ConflictedMerge(t *testing.T) {
 	if n := countCalls(runner.calls, "Merge"); n != 1 {
 		t.Errorf("Merge calls: got %d, want 1", n)
 	}
-	// WorktreeOpen called once (to get a pane in the base repo).
-	if n := countCalls(runner.calls, "WorktreeOpen"); n != 1 {
-		t.Errorf("WorktreeOpen calls: got %d, want 1", n)
+	// OpenBaseWorkspace called once (to get a pane in the base repo).
+	if n := countCalls(runner.calls, "OpenBaseWorkspace"); n != 1 {
+		t.Errorf("OpenBaseWorkspace calls: got %d, want 1", n)
 	}
 	// Two PaneList calls: one for the issue worktree, one for the base workspace.
 	if n := countCalls(runner.calls, "PaneList"); n != 2 {
@@ -738,7 +744,7 @@ func TestMergeBack_ConflictFixBlocked(t *testing.T) {
 	logf := func(format string, args ...any) {
 		t.Logf(format, args...)
 	}
-	result := dispatchOne(cfg, runner, iss, logf)
+	result := dispatchOne(cfg, runner, iss, logf, &sync.Mutex{})
 
 	// Result must be "error" because fix-conflict blocked.
 	if result.Status != "error" {

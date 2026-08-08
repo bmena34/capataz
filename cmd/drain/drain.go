@@ -54,8 +54,13 @@ type IssueResult struct {
 //     a. claim  → b. worktree create → c. agent start → d. agent wait → e. resolve on done.
 //  4. Re-scan. Stop when waves is empty.
 func Drain(cfg Config, runner Runner) error {
+	// logf is called from concurrent dispatchOne goroutines, so serialize writes
+	// to the shared cfg.Out (else lines interleave / the strings.Builder races).
+	var logMu sync.Mutex
 	logf := func(format string, args ...any) {
+		logMu.Lock()
 		fmt.Fprintf(cfg.Out, format+"\n", args...)
+		logMu.Unlock()
 	}
 
 	if cfg.AgentTimeoutMS <= 0 {
@@ -70,6 +75,10 @@ func Drain(cfg Config, runner Runner) error {
 	// re-dispatched forever. maxRounds is a hard backstop.
 	const maxRounds = 100
 	failed := map[string]int{}
+	// mergeBack mutates the shared base repo (git merge, possibly a whole
+	// conflict-resolution session). Serialize it so concurrent dispatches don't
+	// race on git's index lock or step on each other's in-progress merge.
+	var mergeMu sync.Mutex
 
 	for round := 1; ; round++ {
 		if round > maxRounds {
@@ -111,7 +120,7 @@ func Drain(cfg Config, runner Runner) error {
 		}
 
 		logf("drain: round %d — %d dispatchable, dispatching %d", round, len(batch), len(todo))
-		results := dispatchBatch(cfg, runner, todo, logf)
+		results := dispatchBatch(cfg, runner, todo, logf, &mergeMu)
 
 		// Record outcomes. done issues drop from the next waves scan (capataz-work
 		// resolved them); anything else is recorded as failed so it isn't retried.
@@ -137,14 +146,14 @@ func Drain(cfg Config, runner Runner) error {
 
 // dispatchBatch claims, creates worktrees, starts agents, and waits for all
 // issues in batch concurrently. It returns one IssueResult per issue.
-func dispatchBatch(cfg Config, runner Runner, batch []WaveIssue, logf func(string, ...any)) []IssueResult {
+func dispatchBatch(cfg Config, runner Runner, batch []WaveIssue, logf func(string, ...any), mergeMu *sync.Mutex) []IssueResult {
 	results := make([]IssueResult, len(batch))
 	var wg sync.WaitGroup
 	for i, iss := range batch {
 		wg.Add(1)
 		go func(idx int, issue WaveIssue) {
 			defer wg.Done()
-			results[idx] = dispatchOne(cfg, runner, issue, logf)
+			results[idx] = dispatchOne(cfg, runner, issue, logf, mergeMu)
 		}(i, iss)
 	}
 	wg.Wait()
@@ -155,7 +164,7 @@ func dispatchBatch(cfg Config, runner Runner, batch []WaveIssue, logf func(strin
 // verify commits → merge → cleanup. It does NOT claim or resolve — capataz-work
 // owns claim → implement → resolve (and refuses a pre-claimed issue). The drain
 // only verifies the agent actually produced commits, then merges.
-func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...any)) IssueResult {
+func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...any), mergeMu *sync.Mutex) IssueResult {
 	fail := func(status string, err error) IssueResult {
 		return IssueResult{Issue: iss, Status: status, Err: err}
 	}
@@ -238,9 +247,13 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	logf("drain: [%s] verified %d commit(s) on %s", iss.Number, ahead, iss.Branch)
 
 	// Step e: merge the worktree branch back into the base repo, then remove the
-	// worktree. Conflict → run a fix-conflict agent first.
+	// worktree. Conflict → run a fix-conflict agent first. Serialized across
+	// concurrent dispatches so only one merge-back touches the base repo at a time.
 	logf("drain: [%s] merging branch %s into base %s", iss.Number, iss.Branch, cfg.RepoPath)
-	if res := mergeBack(cfg, runner, iss, workspaceID, logf); res != nil {
+	mergeMu.Lock()
+	res := mergeBack(cfg, runner, iss, workspaceID, logf)
+	mergeMu.Unlock()
+	if res != nil {
 		return fail("error", res)
 	}
 
@@ -261,7 +274,7 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 		logf("drain: [%s] CONFLICT merging %s — starting fix-conflict agent in base repo", iss.Number, iss.Branch)
 
 		// Open the base repo as a herdr workspace to get a pane there.
-		baseWsID, err := runner.WorktreeOpen(cfg.RepoPath)
+		baseWsID, err := runner.OpenBaseWorkspace(cfg.RepoPath)
 		if err != nil {
 			return fmt.Errorf("open base workspace for fix-conflict: %w", err)
 		}

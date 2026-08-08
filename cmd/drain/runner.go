@@ -38,10 +38,12 @@ type Runner interface {
 	// DeleteBranch deletes <branch> in repo — cleanup after a failed dispatch.
 	DeleteBranch(repo, branch string) error
 
-	// WorktreeOpen runs `herdr worktree open --no-focus --cwd <cwd>` and returns
-	// the workspace_id for an already-existing worktree (the base repo). Used to
-	// obtain a pane in the base checkout when a conflict agent must run there.
-	WorktreeOpen(cwd string) (workspaceID string, err error)
+	// OpenBaseWorkspace runs `herdr workspace create --no-focus --cwd <cwd>` and
+	// returns the new workspace_id — used to get a pane in the BASE repo so a
+	// fix-conflict agent can run there. (`herdr worktree open` is the wrong verb:
+	// it requires --path/--branch and is for linked worktrees, not the primary
+	// checkout.)
+	OpenBaseWorkspace(cwd string) (workspaceID string, err error)
 
 	// PaneList runs `herdr pane list --workspace <workspaceID>` and returns the
 	// first pane_id found in that workspace.
@@ -167,13 +169,13 @@ func (r *realRunner) DeleteBranch(repo, branch string) error {
 	return nil
 }
 
-func (r *realRunner) WorktreeOpen(cwd string) (string, error) {
-	args := []string{"worktree", "open", "--no-focus", "--cwd", cwd}
+func (r *realRunner) OpenBaseWorkspace(cwd string) (string, error) {
+	args := []string{"workspace", "create", "--no-focus", "--cwd", cwd}
 	out, err := exec.Command(r.herdrBin, args...).Output()
 	if err != nil {
-		return "", fmt.Errorf("herdr worktree open --cwd %s: %w\noutput: %s", cwd, err, out)
+		return "", fmt.Errorf("herdr workspace create --cwd %s: %w\noutput: %s", cwd, err, out)
 	}
-	return parseWorktreeID(out, "herdr worktree open")
+	return parseWorktreeID(out, "herdr workspace create")
 }
 
 // parseWorktreeID extracts the workspace_id from a herdr worktree create/open
@@ -356,9 +358,11 @@ func (r *realRunner) Merge(branch, repo string) (bool, error) {
 }
 
 func (r *realRunner) WorktreeRemove(workspaceID string) error {
-	out, err := exec.Command(r.herdrBin, "worktree", "remove", "--workspace", workspaceID).CombinedOutput()
+	// --force so a worktree with any residual state (or a just-merged one herdr
+	// considers non-empty) still tears down cleanly.
+	out, err := exec.Command(r.herdrBin, "worktree", "remove", "--workspace", workspaceID, "--force").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("herdr worktree remove --workspace %s: %w\n%s", workspaceID, err, out)
+		return fmt.Errorf("herdr worktree remove --workspace %s --force: %w\n%s", workspaceID, err, out)
 	}
 	return nil
 }
