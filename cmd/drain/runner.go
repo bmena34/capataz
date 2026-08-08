@@ -56,6 +56,17 @@ type Runner interface {
 	// AgentPrompt submits the task prompt to an already-started agent.
 	AgentPrompt(name, prompt string) error
 
+	// AgentReachedWorking reports whether the agent left idle (working/done/
+	// blocked) shortly after a prompt — i.e. it received the task. False → the
+	// prompt was likely dropped and should be resubmitted.
+	AgentReachedWorking(name string) bool
+
+	// MergeResolved reports whether repo has no in-progress conflicted merge.
+	MergeResolved(repo string) (bool, error)
+
+	// ClosePane closes a herdr pane (tears down a fix-conflict base workspace).
+	ClosePane(paneID string) error
+
 	// AgentWait runs `herdr agent wait <target> --until done --until blocked --timeout <ms>`.
 	// Returns the final status string ("done", "blocked", "timeout", or error text).
 	AgentWait(target string, timeoutMS int) (status string, err error)
@@ -290,6 +301,41 @@ func (r *realRunner) AgentPrompt(name, prompt string) error {
 	return nil
 }
 
+// AgentReachedWorking reports whether the agent left its initial idle state
+// (reached working/done/blocked) within a short window — i.e. it actually
+// received and acted on the submitted prompt. A fresh claude can drop a prompt
+// submitted before it's ready and sit idle; the caller retries when this is false.
+func (r *realRunner) AgentReachedWorking(name string) bool {
+	err := exec.Command(r.herdrBin, "agent", "wait", name,
+		"--until", "working", "--until", "done", "--until", "blocked",
+		"--timeout", "15000").Run()
+	return err == nil
+}
+
+// MergeResolved reports whether repo has no in-progress conflicted merge — no
+// .git/MERGE_HEAD and no unmerged (conflicted) files. Used to verify a
+// fix-conflict agent actually completed the merge before declaring success.
+func (r *realRunner) MergeResolved(repo string) (bool, error) {
+	if err := exec.Command("git", "-C", repo, "rev-parse", "--verify", "-q", "MERGE_HEAD").Run(); err == nil {
+		return false, nil // MERGE_HEAD present → still mid-merge
+	}
+	out, err := exec.Command("git", "-C", repo, "diff", "--name-only", "--diff-filter=U").Output()
+	if err != nil {
+		return false, fmt.Errorf("git -C %s diff --diff-filter=U: %w", repo, err)
+	}
+	return strings.TrimSpace(string(out)) == "", nil
+}
+
+// ClosePane closes a herdr pane (used to tear down a base-repo workspace opened
+// for a fix-conflict agent).
+func (r *realRunner) ClosePane(paneID string) error {
+	out, err := exec.Command(r.herdrBin, "pane", "close", paneID).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("herdr pane close %s: %w\n%s", paneID, err, out)
+	}
+	return nil
+}
+
 // agentWaitResult parses the subset of herdr agent wait output we need.
 type agentWaitResult struct {
 	Result *struct {
@@ -303,17 +349,11 @@ type agentWaitResult struct {
 }
 
 func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
-	// Best-effort guard: wait for the agent to actually start working before we
-	// treat idle as "finished". A freshly-prompted agent sits idle for a beat;
-	// without this, --until idle could return before any work happened. If the
-	// agent finished so fast we miss "working", the completion wait below returns
-	// immediately anyway.
-	_ = exec.Command(r.herdrBin, "agent", "wait", target, "--until", "working", "--timeout", "30000").Run()
-
-	// Wait for the agent to finish its turn. herdr reports "done" for an UNFOCUSED
-	// tab but "idle" for a focused one (same underlying finished state), so accept
-	// both — else a drain hangs whenever an operator clicks into the pane.
-	// "blocked" means it needs input.
+	// Callers confirm the agent actually started (AgentReachedWorking) before
+	// this, so idle here means "finished". Wait for the agent to end its turn.
+	// herdr reports "done" for an UNFOCUSED tab but "idle" for a focused one
+	// (same underlying finished state), so accept both — else a drain hangs
+	// whenever an operator clicks into the pane. "blocked" means it needs input.
 	args := []string{
 		"agent", "wait", target,
 		"--until", "done",

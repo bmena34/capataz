@@ -160,6 +160,28 @@ func dispatchBatch(cfg Config, runner Runner, batch []WaveIssue, logf func(strin
 	return results
 }
 
+// startAgentWithTask launches a claude agent in paneID and reliably submits the
+// task prompt. A fresh claude can drop a prompt submitted before it's ready and
+// sit idle, so we confirm the agent actually left idle (AgentReachedWorking) and
+// resubmit the prompt if not. Returns an error if the agent never starts.
+func startAgentWithTask(runner Runner, name, paneID, prompt string, skipPerms bool, num string, logf func(string, ...any)) error {
+	logf("drain: [%s] starting agent %s in pane %s", num, name, paneID)
+	if err := runner.AgentStart(name, paneID, skipPerms); err != nil {
+		return fmt.Errorf("agent start: %w", err)
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		logf("drain: [%s] submitting task to agent %s (attempt %d)", num, name, attempt)
+		if err := runner.AgentPrompt(name, prompt); err != nil {
+			return fmt.Errorf("agent prompt: %w", err)
+		}
+		if runner.AgentReachedWorking(name) {
+			return nil
+		}
+		logf("drain: [%s] agent %s still idle after prompt — retrying", num, name)
+	}
+	return fmt.Errorf("agent %s never started working after 3 prompt attempts", name)
+}
+
 // dispatchOne handles a single issue: worktree → agent (capataz-work) → wait →
 // verify commits → merge → cleanup. It does NOT claim or resolve — capataz-work
 // owns claim → implement → resolve (and refuses a pre-claimed issue). The drain
@@ -206,19 +228,14 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		return failClean("error", fmt.Errorf("pane list workspace=%s: %w", workspaceID, err))
 	}
 
-	// Step c: start a Claude agent running /capataz-work in the worktree pane.
-	// The minimal prompt tells capataz-work the absolute issue path; it claims,
-	// implements, commits on the branch, and resolves, self-detecting
-	// isolated-worktree mode from the pane's cwd.
+	// Step c: start a Claude agent running /capataz-work in the worktree pane and
+	// reliably deliver the task (retrying if a fresh claude drops the first prompt).
+	// capataz-work claims, implements, commits on the branch, and resolves,
+	// self-detecting isolated-worktree mode from the pane's cwd.
 	agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
 	prompt := fmt.Sprintf("run /capataz-work on %s in this worktree", iss.Path)
-	logf("drain: [%s] starting agent %s in pane %s", iss.Number, agentName, paneID)
-	if err := runner.AgentStart(agentName, paneID, cfg.SkipPermissions); err != nil {
-		return failClean("error", fmt.Errorf("agent start: %w", err))
-	}
-	logf("drain: [%s] submitting task to agent %s", iss.Number, agentName)
-	if err := runner.AgentPrompt(agentName, prompt); err != nil {
-		return failClean("error", fmt.Errorf("agent prompt: %w", err))
+	if err := startAgentWithTask(runner, agentName, paneID, prompt, cfg.SkipPermissions, iss.Number, logf); err != nil {
+		return failClean("error", err)
 	}
 
 	// Step d: wait for the agent on the unfocused pane. blocked/timeout are
@@ -283,15 +300,18 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 			return fmt.Errorf("pane list base workspace=%s: %w", baseWsID, err)
 		}
 
-		// Start a fix-conflict agent in the base repo (where the merge is in progress).
-		fixName := fmt.Sprintf("fix-conflict-%s-%s", cfg.Feature, iss.Number)
-		fixPrompt := "run /capataz-fix-conflict — resolve the in-progress conflicted merge in this repo and complete it."
-		logf("drain: [%s] starting fix-conflict agent %s in pane %s", iss.Number, fixName, basePaneID)
-		if err := runner.AgentStart(fixName, basePaneID, cfg.SkipPermissions); err != nil {
-			return fmt.Errorf("fix-conflict agent start: %w", err)
+		// Trust the base repo so the fresh fix-conflict claude doesn't hang on the
+		// folder-trust prompt.
+		if err := runner.TrustDir(cfg.RepoPath); err != nil {
+			return fmt.Errorf("trust base repo for fix-conflict: %w", err)
 		}
-		if err := runner.AgentPrompt(fixName, fixPrompt); err != nil {
-			return fmt.Errorf("fix-conflict agent prompt: %w", err)
+
+		// Start a fix-conflict agent in the base repo (where the merge is in
+		// progress), reliably delivering its task.
+		fixName := fmt.Sprintf("fix-conflict-%s-%s", cfg.Feature, iss.Number)
+		fixPrompt := "run /capataz-fix-conflict — resolve the in-progress conflicted merge in this repo and complete it (commit the merge)."
+		if err := startAgentWithTask(runner, fixName, basePaneID, fixPrompt, cfg.SkipPermissions, iss.Number, logf); err != nil {
+			return fmt.Errorf("fix-conflict %w", err)
 		}
 
 		logf("drain: [%s] waiting for fix-conflict agent %s (timeout=%dms)", iss.Number, fixName, cfg.AgentTimeoutMS)
@@ -300,11 +320,27 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 			return fmt.Errorf("fix-conflict agent wait: %w", err)
 		}
 		if fixStatus != "done" {
-			// blocked or timeout: the conflict needs operator attention; surface it.
+			// blocked or timeout: leave the base workspace open for the operator.
 			return fmt.Errorf("fix-conflict agent %s for issue %s ended with status %q — operator attention required",
 				fixName, iss.Number, fixStatus)
 		}
-		logf("drain: [%s] fix-conflict agent done — conflict resolved", iss.Number)
+
+		// Verify the merge actually completed — don't trust the agent's "done".
+		// If it's still mid-merge, surface it and leave the base workspace open.
+		resolved, err := runner.MergeResolved(cfg.RepoPath)
+		if err != nil {
+			return fmt.Errorf("verify merge resolved: %w", err)
+		}
+		if !resolved {
+			return fmt.Errorf("fix-conflict agent %s reported done but %s is still mid-merge (conflict unresolved) — operator attention required",
+				fixName, cfg.RepoPath)
+		}
+		logf("drain: [%s] fix-conflict agent done — merge completed", iss.Number)
+
+		// Success: close the base workspace we opened for the fix-conflict agent.
+		if e := runner.ClosePane(basePaneID); e != nil {
+			logf("drain: [%s] closing base workspace pane failed (non-fatal): %v", iss.Number, e)
+		}
 	} else {
 		logf("drain: [%s] clean merge — branch %s landed", iss.Number, iss.Branch)
 	}

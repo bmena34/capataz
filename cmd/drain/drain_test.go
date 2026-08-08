@@ -162,6 +162,10 @@ type fakeRunner struct {
 	// Absent/nil → default 1 (the agent produced work).
 	commitsAhead map[string]int
 
+	// mergeUnresolved makes MergeResolved return false (fix-conflict agent
+	// reported done but the merge is still conflicted).
+	mergeUnresolved bool
+
 	mu    sync.Mutex
 	calls []fakeCall
 }
@@ -245,6 +249,21 @@ func (f *fakeRunner) AgentStart(name, paneID string, skipPerms bool) error {
 
 func (f *fakeRunner) AgentPrompt(name, prompt string) error {
 	f.record("AgentPrompt", name, prompt)
+	return nil
+}
+
+func (f *fakeRunner) AgentReachedWorking(name string) bool {
+	f.record("AgentReachedWorking", name)
+	return true // default: the agent received its prompt
+}
+
+func (f *fakeRunner) MergeResolved(repo string) (bool, error) {
+	f.record("MergeResolved", repo)
+	return !f.mergeUnresolved, nil
+}
+
+func (f *fakeRunner) ClosePane(paneID string) error {
+	f.record("ClosePane", paneID)
 	return nil
 }
 
@@ -504,6 +523,29 @@ func TestDrain_SkipPermissionsFlag(t *testing.T) {
 	}
 	// The fake records the prompt arg — we trust the real runner to pass
 	// --dangerously-skip-permissions; here we just verify the code path ran.
+}
+
+// TestMergeBack_FixConflictIncomplete covers issue 12: the fix-conflict agent
+// reports "done" but the merge is still conflicted (MergeResolved=false). The
+// drain must NOT declare success or remove the worktree — it surfaces an error.
+func TestMergeBack_FixConflictIncomplete(t *testing.T) {
+	const branch = "capataz/f-01-a"
+	runner := &fakeRunner{
+		agentWaitStatus: map[string]string{"drain-f-01": "done", "fix-conflict-f-01": "done"},
+		mergeConflicted: map[string]bool{branch: true},
+		mergeUnresolved: true, // agent said done but the conflict remains
+	}
+	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
+	iss := WaveIssue{Number: "01", Path: "/repo/.scratch/f/issues/01-a.md", Feature: "f", Status: "ready-for-agent", Branch: branch}
+
+	result := dispatchOne(cfg, runner, iss, func(string, ...any) {}, &sync.Mutex{})
+	if result.Status != "error" {
+		t.Errorf("expected status=error when the merge stays conflicted, got %q", result.Status)
+	}
+	// Must NOT remove the worktree — the operator needs the conflicted state.
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 0 {
+		t.Errorf("WorktreeRemove must not be called when the merge is unresolved; got %d", n)
+	}
 }
 
 // TestDrain_StopsOnRepeatedFailure covers issue 10: an issue that keeps failing
