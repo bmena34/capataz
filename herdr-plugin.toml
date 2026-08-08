@@ -21,7 +21,7 @@ id = "bmena34.capataz-herdr"
 name = "Capataz"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
-description = "capataz's .scratch issue backlog, parallel-safe dispatch waves, and drain orchestrator as a herdr plugin. Overlay issue view, hands-off drain action, worktree-event hook."
+description = "capataz's .scratch issue backlog, parallel-safe dispatch waves, and drain orchestrator as a herdr plugin. Popup issue view, hands-off drain action, worktree-event hook."
 platforms = ["macos", "linux"]
 
 # ---------------------------------------------------------------------------
@@ -37,11 +37,16 @@ platforms = ["macos", "linux"]
 command = ["sh", "scripts/build.sh"]
 
 # ---------------------------------------------------------------------------
-# issues — the backlog overlay pane.
+# issues — the backlog popup pane.
 #
-# Opens capataz's daemon-free full-screen issue viewer (`capataz issues`) in
-# an overlay pane hosted by herdr. herdr restores focus when it exits.
-# CAPATAZ_BIN lets a locally-built binary be used before `make install`.
+# Opens capataz's daemon-free full-screen issue viewer (`capataz issues`) in a
+# centered popup hosted by herdr, sized to ~70% of the terminal (width/height
+# are only honored when placement = "popup"; an "overlay" always fills the
+# screen). herdr restores focus when it exits. CAPATAZ_BIN lets a locally-built
+# binary be used before `make install`.
+#
+# open-issues.sh omits --placement/--width/--height so this declaration is the
+# single source of truth for the pane's size.
 #
 # Opened via:
 #   herdr plugin pane open --plugin bmena34.capataz-herdr --entrypoint issues --cwd <repo>
@@ -49,7 +54,11 @@ command = ["sh", "scripts/build.sh"]
 [[panes]]
 id = "issues"
 title = "Capataz: Backlog"
-placement = "overlay"
+placement = "popup"
+# ~70% of the terminal area. PopupSize accepts a percentage ("^(100|[1-9][0-9]?)%$")
+# or an integer cell count (border included).
+width = "70%"
+height = "70%"
 platforms = ["macos", "linux"]
 # Resolve via $HERDR_PLUGIN_ROOT — herdr evaluates a pane's command relative
 # to the pane's --cwd, which is the focused repo dir (not the plugin root).
@@ -85,15 +94,21 @@ platforms = ["macos", "linux"]
 command = ["./bin/drain"]
 
 # ---------------------------------------------------------------------------
-# usage — plan-usage gauge overlay pane.
+# usage — plan-usage gauge popup pane.
 #
-# Opens a short-lived overlay that runs `capataz usage`: reads the Claude
+# Opens a short-lived popup that runs `capataz usage`: reads the Claude
 # Code OAuth token from the macOS Keychain and prints the live plan-usage
 # gauge (session % + bar + reset time; weekly % + bar + reset time).
+# The gauge is only 4 lines (widest ~55 cols) plus the "press any key" prompt,
+# so the popup is sized in fixed cells to be as small as the content allows
+# rather than filling the screen (width/height are only honored for popups).
 # NOTE: capataz usage calls an UNOFFICIAL Anthropic endpoint — the same one
 # `claude`'s /usage shows. It is not documented and can change; the URL and
 # keychain_service are configurable in ~/.config/capataz/config.json, and
 # usage.enabled=false disables it entirely.
+#
+# open-usage.sh omits --placement/--width/--height so this declaration is the
+# single source of truth for the pane's size.
 #
 # Opened via:
 #   herdr plugin pane open --plugin bmena34.capataz-herdr --entrypoint usage
@@ -101,7 +116,10 @@ command = ["./bin/drain"]
 [[panes]]
 id = "usage"
 title = "Capataz: Plan Usage"
-placement = "overlay"
+placement = "popup"
+# Fixed cell size (border included): just big enough for the gauge + prompt.
+width = 60
+height = 9
 platforms = ["macos", "linux"]
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/usage-ui.sh\""]
 

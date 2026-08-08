@@ -16,10 +16,12 @@ cwd=$(printf '%s' "$ctx" | sed -n 's/.*"focused_pane_cwd":"\([^"]*\)".*/\1/p')
 [ -n "$cwd" ] || cwd=$(printf '%s' "$ctx" | sed -n 's/.*"workspace_cwd":"\([^"]*\)".*/\1/p')
 [ -n "$cwd" ] || cwd="$PWD"
 
+# Placement/size (a minimal fixed-cell popup) come from the [[panes]] usage
+# declaration in herdr-plugin.toml — omit --placement/--width/--height here so
+# that manifest stays the single source of truth (a --placement flag overrides it).
 exec herdr plugin pane open \
   --plugin bmena34.capataz-herdr \
   --entrypoint usage \
-  --placement overlay \
   --cwd "$cwd" \
   --env "CAPATAZ_BIN=${CAPATAZ_BIN:-capataz}" \
   --focus

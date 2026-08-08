@@ -12,9 +12,9 @@ This plugin wires the two together: herdr runs the substrate; capataz provides t
 
 ## What this plugin provides
 
-- **Backlog overlay** — `capataz issues` rendered inside a herdr-managed overlay pane, scoped to the focused pane's repo (reads the repo's `.scratch` backlog). Interactive: cursor movement, status badges, feature grouping. Dismissed with `q`.
-- **Usage overlay** — `capataz usage` rendered in an overlay pane: the plan-usage gauge (herdr has no equivalent).
-- **Open-backlog / usage actions** — keyboard-bindable herdr actions that open those overlays in the focused pane's repo cwd.
+- **Backlog popup** — `capataz issues` rendered inside a herdr-managed popup pane (~70% of the terminal), scoped to the focused pane's repo (reads the repo's `.scratch` backlog). Interactive: cursor movement, status badges, feature grouping. Dismissed with `q`.
+- **Usage popup** — `capataz usage` rendered in a small popup sized to the gauge: the plan-usage gauge (herdr has no equivalent).
+- **Open-backlog / usage actions** — keyboard-bindable herdr actions that open those popups in the focused pane's repo cwd.
 - **Drain action** — invokes the dispatch orchestrator (`cmd/drain`): scans the feature backlog, takes a parallel-safe wave of `ready-for-agent` issues, and for each spins up a git worktree, dispatches a fresh `capataz-work` **agent** into it (default posture — no bypass-permissions), waits for it to finish, verifies it committed, and merges the branch back (resolving conflicts with a `capataz-fix-conflict` agent when needed). Loops until the backlog drains.
 - **`worktree.created` event hook** — herdr fires this when it creates a git worktree; the drain loop uses it to coordinate dispatch.
 
@@ -65,14 +65,14 @@ and a single `command` of the form `<plugin-id>.<action-id>`. Trigger it with th
 herdr prefix (default `ctrl+b`) then the key — e.g. `ctrl+b` then `i`.
 
 ```toml
-# open the backlog overlay in the focused pane's repo  →  ctrl+b i
+# open the backlog popup in the focused pane's repo  →  ctrl+b i
 [[keys.command]]
 key = "prefix+i"
 type = "plugin_action"
 command = "bmena34.capataz-herdr.issues"
 description = "capataz: open backlog"
 
-# open the plan-usage overlay  →  ctrl+b u
+# open the plan-usage popup  →  ctrl+b u
 [[keys.command]]
 key = "prefix+u"
 type = "plugin_action"
@@ -87,7 +87,7 @@ to validate.
 > and `--repo`, which a bare action can't supply. Run it from a shell instead —
 > see [Run a drain](#6-run-a-drain).
 
-### 5. Open the backlog overlay
+### 5. Open the backlog popup
 
 From any herdr pane inside a repo that has a `.scratch` backlog:
 
@@ -96,7 +96,7 @@ From any herdr pane inside a repo that has a `.scratch` backlog:
 herdr plugin action invoke issues
 ```
 
-The overlay opens in the focused pane's repo cwd. Navigate with `j`/`k`, dismiss with `q`.
+The popup opens in the focused pane's repo cwd. Navigate with `j`/`k`, dismiss with `q`.
 
 ### 6. Run a drain
 
@@ -130,7 +130,7 @@ default allowlist (needs the one-time bypass-permissions screen accepted first).
 ### Invoke actions from the CLI
 
 ```sh
-# open the backlog overlay in the focused pane's repo
+# open the backlog popup in the focused pane's repo
 herdr plugin action invoke issues
 
 # run the drain orchestrator
@@ -162,11 +162,11 @@ herdr plugin unlink bmena34.capataz-herdr
 | capataz piece | fate in this plugin |
 |---|---|
 | `internal/issues`, `internal/worktree`, `skills/` | port ~as-is (daemon-free already); `capataz issue` CLI is the source of truth |
-| issue view (`internal/tui issueview.go`) | repackaged as the `[[panes]] issues` overlay (real Bubble Tea, not a plain list) |
+| issue view (`internal/tui issueview.go`) | repackaged as the `[[panes]] issues` popup (real Bubble Tea, not a plain list) |
 | dashboard / sidebar | dropped — herdr renders the agent panel |
 | `tmux.go` | rewritten → herdr socket CLI (`herdr worktree create`, `herdr agent prompt`) |
 | hook → daemon → dashboard broadcast | dropped entirely — herdr's own Claude integration (`herdr integration install claude`) provides agent state; capataz doesn't feed or override it |
-| usage gauge | retained as the `usage` overlay pane (`capataz usage`); herdr has no equivalent |
+| usage gauge | retained as the `usage` popup pane (`capataz usage`); herdr has no equivalent |
 | launchd daemon + SQLite persistence | dropped — herdr owns persistence |
 | `capataz-drain` skill (orchestrator logic) | replaced by `cmd/drain` Go binary (this repo's dispatch engine) |
 
@@ -183,9 +183,9 @@ cmd/
   drain/            — Go source for the dispatch orchestrator
 bin/
   issues-ui.sh      — pane entrypoint: runs `capataz issues` in the pane cwd
-  open-issues.sh    — action: opens the issues overlay in the focused repo
+  open-issues.sh    — action: opens the issues popup in the focused repo
   usage-ui.sh       — pane entrypoint: runs `capataz usage`
-  open-usage.sh     — action: opens the usage overlay in the focused repo
+  open-usage.sh     — action: opens the usage popup in the focused repo
   on-worktree.sh    — event hook: logs worktree.created events
   drain             — built orchestrator binary (gitignored, produced by build.sh)
 ```
