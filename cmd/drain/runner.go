@@ -47,8 +47,12 @@ type Runner interface {
 	// first pane_id found in that workspace.
 	PaneList(workspaceID string) (paneID string, err error)
 
-	// AgentStart runs `herdr agent start <name> --kind claude --pane <paneID> -- <prompt>`.
-	AgentStart(name, paneID, prompt string, skipPerms bool) error
+	// AgentStart launches claude in a pane with the permission posture (default:
+	// --allowedTools; skipPerms: --dangerously-skip-permissions) but NO prompt.
+	AgentStart(name, paneID string, skipPerms bool) error
+
+	// AgentPrompt submits the task prompt to an already-started agent.
+	AgentPrompt(name, prompt string) error
 
 	// AgentWait runs `herdr agent wait <target> --until done --until blocked --timeout <ms>`.
 	// Returns the final status string ("done", "blocked", "timeout", or error text).
@@ -230,13 +234,24 @@ func (r *realRunner) PaneList(workspaceID string) (string, error) {
 	return paneID, nil
 }
 
-func (r *realRunner) AgentStart(name, paneID, prompt string, skipPerms bool) error {
-	args := []string{"agent", "start", name, "--kind", "claude", "--pane", paneID}
+// allowedTools is the tool allowlist handed to a dispatched Claude in default
+// posture (no --dangerously-skip-permissions, so no bypass-permissions screen).
+// This exact set was proven sufficient for capataz-work to implement + commit +
+// resolve an issue fully hands-off.
+const allowedTools = "Bash,Edit,Write,Read,Glob,Grep"
+
+func (r *realRunner) AgentStart(name, paneID string, skipPerms bool) error {
+	// Launch claude with the permission posture but NO task prompt: --allowedTools
+	// is variadic and would swallow a trailing positional prompt, and the fresh
+	// claude needs the prompt submitted separately anyway (see AgentPrompt).
+	// Default posture is --allowedTools (avoids the bypass-permissions warning
+	// screen that a fresh --dangerously-skip-permissions process blocks on);
+	// skipPerms keeps the old bypass flag for operators who opt in.
+	args := []string{"agent", "start", name, "--kind", "claude", "--pane", paneID, "--"}
 	if skipPerms {
-		// Pass --dangerously-skip-permissions as an agent arg after --
-		args = append(args, "--", "--dangerously-skip-permissions", prompt)
+		args = append(args, "--dangerously-skip-permissions")
 	} else {
-		args = append(args, "--", prompt)
+		args = append(args, "--allowedTools", allowedTools)
 	}
 	// A freshly-created worktree pane isn't at its interactive shell prompt the
 	// instant herdr returns from `worktree create`; agent start rejects it with
@@ -257,6 +272,18 @@ func (r *realRunner) AgentStart(name, paneID, prompt string, skipPerms bool) err
 	}
 	if err != nil {
 		return fmt.Errorf("herdr agent start %s: %w\n%s", name, err, out)
+	}
+	return nil
+}
+
+// AgentPrompt submits the task prompt to an already-started agent
+// (`herdr agent prompt <name> <text>`), separate from AgentStart. A fresh claude
+// launched via agent start sits idle at its prompt; this is what actually kicks
+// off the work.
+func (r *realRunner) AgentPrompt(name, prompt string) error {
+	out, err := exec.Command(r.herdrBin, "agent", "prompt", name, prompt).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("herdr agent prompt %s: %w\n%s", name, err, out)
 	}
 	return nil
 }

@@ -204,8 +204,12 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
 	prompt := fmt.Sprintf("run /capataz-work on %s in this worktree", iss.Path)
 	logf("drain: [%s] starting agent %s in pane %s", iss.Number, agentName, paneID)
-	if err := runner.AgentStart(agentName, paneID, prompt, cfg.SkipPermissions); err != nil {
+	if err := runner.AgentStart(agentName, paneID, cfg.SkipPermissions); err != nil {
 		return failClean("error", fmt.Errorf("agent start: %w", err))
+	}
+	logf("drain: [%s] submitting task to agent %s", iss.Number, agentName)
+	if err := runner.AgentPrompt(agentName, prompt); err != nil {
+		return failClean("error", fmt.Errorf("agent prompt: %w", err))
 	}
 
 	// Step d: wait for the agent on the unfocused pane. blocked/timeout are
@@ -270,8 +274,11 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 		fixName := fmt.Sprintf("fix-conflict-%s-%s", cfg.Feature, iss.Number)
 		fixPrompt := "run /capataz-fix-conflict — resolve the in-progress conflicted merge in this repo and complete it."
 		logf("drain: [%s] starting fix-conflict agent %s in pane %s", iss.Number, fixName, basePaneID)
-		if err := runner.AgentStart(fixName, basePaneID, fixPrompt, cfg.SkipPermissions); err != nil {
+		if err := runner.AgentStart(fixName, basePaneID, cfg.SkipPermissions); err != nil {
 			return fmt.Errorf("fix-conflict agent start: %w", err)
+		}
+		if err := runner.AgentPrompt(fixName, fixPrompt); err != nil {
+			return fmt.Errorf("fix-conflict agent prompt: %w", err)
 		}
 
 		logf("drain: [%s] waiting for fix-conflict agent %s (timeout=%dms)", iss.Number, fixName, cfg.AgentTimeoutMS)
@@ -310,19 +317,25 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 	for i, iss := range batch {
 		agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
 		prompt := fmt.Sprintf("run /capataz-work on %s in this worktree", iss.Path)
+		posture := "--allowedTools " + allowedTools
+		if cfg.SkipPermissions {
+			posture = "--dangerously-skip-permissions"
+		}
 		fmt.Fprintf(cfg.Out, "  [%d] issue %s — %s\n", i+1, iss.Number, iss.Path)
 		fmt.Fprintf(cfg.Out, "      branch : %s\n", iss.Branch)
 		fmt.Fprintf(cfg.Out, "      cmd[1] : herdr worktree create --no-focus --branch %s --cwd %s\n",
 			iss.Branch, cfg.RepoPath)
-		fmt.Fprintf(cfg.Out, "      cmd[2] : herdr agent start %s --kind claude --pane <pane-id> -- %q\n",
-			agentName, prompt)
+		fmt.Fprintf(cfg.Out, "      cmd[2] : capataz trust-dir <worktree-checkout-path>\n")
+		fmt.Fprintf(cfg.Out, "      cmd[3] : herdr agent start %s --kind claude --pane <pane-id> -- %s\n",
+			agentName, posture)
+		fmt.Fprintf(cfg.Out, "      cmd[4] : herdr agent prompt %s %q\n", agentName, prompt)
 		fmt.Fprintf(cfg.Out, "               (capataz-work claims → implements → commits → resolves)\n")
-		fmt.Fprintf(cfg.Out, "      cmd[3] : herdr agent wait %s --until done --until blocked --timeout %d\n",
+		fmt.Fprintf(cfg.Out, "      cmd[5] : herdr agent wait %s --until done --until blocked --timeout %d\n",
 			agentName, cfg.AgentTimeoutMS)
-		fmt.Fprintf(cfg.Out, "      cmd[4] : git -C %s rev-list --count HEAD..%s   (verify >= 1 commit)\n",
+		fmt.Fprintf(cfg.Out, "      cmd[6] : git -C %s rev-list --count HEAD..%s   (verify >= 1 commit)\n",
 			cfg.RepoPath, iss.Branch)
-		fmt.Fprintf(cfg.Out, "      cmd[5] : git -C %s merge --no-ff %s\n", cfg.RepoPath, iss.Branch)
-		fmt.Fprintf(cfg.Out, "      cmd[6] : herdr worktree remove --workspace <workspace-id>  (clean merge)\n")
+		fmt.Fprintf(cfg.Out, "      cmd[7] : git -C %s merge --no-ff %s\n", cfg.RepoPath, iss.Branch)
+		fmt.Fprintf(cfg.Out, "      cmd[8] : herdr worktree remove --workspace <workspace-id>  (clean merge)\n")
 		fmt.Fprintf(cfg.Out, "             : OR start fix-conflict agent + wait + remove  (on conflict)\n\n")
 	}
 	fmt.Fprintf(cfg.Out, "(No worktrees created, no agents started, no merges run.)\n")

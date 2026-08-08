@@ -232,8 +232,13 @@ func (f *fakeRunner) WorktreeRemove(workspaceID string) error {
 	return nil
 }
 
-func (f *fakeRunner) AgentStart(name, paneID, prompt string, skipPerms bool) error {
-	f.record("AgentStart", name, paneID, prompt)
+func (f *fakeRunner) AgentStart(name, paneID string, skipPerms bool) error {
+	f.record("AgentStart", name, paneID)
+	return nil
+}
+
+func (f *fakeRunner) AgentPrompt(name, prompt string) error {
+	f.record("AgentPrompt", name, prompt)
 	return nil
 }
 
