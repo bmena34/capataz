@@ -303,9 +303,21 @@ type agentWaitResult struct {
 }
 
 func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
+	// Best-effort guard: wait for the agent to actually start working before we
+	// treat idle as "finished". A freshly-prompted agent sits idle for a beat;
+	// without this, --until idle could return before any work happened. If the
+	// agent finished so fast we miss "working", the completion wait below returns
+	// immediately anyway.
+	_ = exec.Command(r.herdrBin, "agent", "wait", target, "--until", "working", "--timeout", "30000").Run()
+
+	// Wait for the agent to finish its turn. herdr reports "done" for an UNFOCUSED
+	// tab but "idle" for a focused one (same underlying finished state), so accept
+	// both — else a drain hangs whenever an operator clicks into the pane.
+	// "blocked" means it needs input.
 	args := []string{
 		"agent", "wait", target,
 		"--until", "done",
+		"--until", "idle",
 		"--until", "blocked",
 		"--timeout", fmt.Sprintf("%d", timeoutMS),
 	}
@@ -332,11 +344,15 @@ func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
 		return "error", fmt.Errorf("herdr agent wait %s: %s: %s", target, result.Error.Code, result.Error.Message)
 	}
 	if result.Result != nil {
-		if result.Result.Status != "" {
-			return result.Result.Status, nil
+		s := result.Result.Status
+		if s == "" {
+			s = result.Result.State
 		}
-		if result.Result.State != "" {
-			return result.Result.State, nil
+		if s == "idle" {
+			s = "done" // a finished (focused) agent — same as done for the drain
+		}
+		if s != "" {
+			return s, nil
 		}
 	}
 	// Command succeeded; assume done.

@@ -315,6 +315,12 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 		return fmt.Errorf("worktree remove: %w", err)
 	}
 
+	// The branch is merged now; delete it so merged branches don't accumulate.
+	// Non-fatal: a lingering branch is harmless, so don't fail the issue over it.
+	if err := runner.DeleteBranch(cfg.RepoPath, iss.Branch); err != nil {
+		logf("drain: [%s] merged-branch delete failed (non-fatal): %v", iss.Number, err)
+	}
+
 	return nil
 }
 

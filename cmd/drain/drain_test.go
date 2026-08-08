@@ -589,6 +589,10 @@ func TestMergeBack_CleanMerge(t *testing.T) {
 	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
 		t.Errorf("WorktreeRemove calls: got %d, want 1", n)
 	}
+	// The merged branch is deleted after a successful merge.
+	if n := countCalls(runner.calls, "DeleteBranch"); n != 1 {
+		t.Errorf("DeleteBranch calls: got %d, want 1 (merged branch cleaned up)", n)
+	}
 	// OpenBaseWorkspace must NOT be called on a clean merge.
 	if n := countCalls(runner.calls, "OpenBaseWorkspace"); n != 0 {
 		t.Errorf("OpenBaseWorkspace calls: got %d, want 0 (no conflict)", n)
