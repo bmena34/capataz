@@ -16,7 +16,7 @@ make test                                   # go test ./...
 go test ./internal/tui -run TestRenderNoPanic   # render regression (every size 1×1..80×50)
 ```
 
-The binary is multiplexed by subcommand (`main.go`): default → dashboard; `daemon`, `hook`, `install`, `uninstall`, `status`, `logs`, `quit`, `config`, `issue`, `popup`, `attach`, `keybind`, `statusline`.
+The binary is multiplexed by subcommand (`main.go`): default → dashboard; `daemon`, `hook`, `install`, `uninstall`, `status`, `logs`, `quit`, `config`, `issue`, `popup`, `attach`, `keybind`, `statusline`, plus three additive, daemon-free commands that back the external `capataz-herdr` herdr plugin: `issues` (standalone full-screen backlog viewer, `internal/tui/issueview.go`), `usage` (headless plan-usage gauge, `usage.go`), and `trust-dir` (pre-seed Claude folder-trust, `trust.go`) — and `issue waves` (JSON `ParallelSafe` plan). These add surfaces the plugin shells out to; they don't touch the daemon/tmux/dashboard.
 
 **Dev loop — what to do after changing each component:**
 - **daemon code** (`internal/daemon`): `go build -o capataz . && ./capataz restart`. The running daemon is a snapshot of the binary at launch.

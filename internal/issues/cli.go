@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,6 +69,14 @@ func Run(args []string) error {
 			repo = args[1]
 		}
 		return list(repo)
+	case "waves":
+		if len(args) < 2 {
+			return usageErr()
+		}
+		if !hasFlag(args[2:], "--json") {
+			return fmt.Errorf("waves: --json flag is required")
+		}
+		return wavesJSON(args[1])
 	default:
 		return usageErr()
 	}
@@ -347,6 +356,93 @@ func list(repo string) error {
 	return nil
 }
 
+// waveIssue is the per-issue entry emitted in each wave by wavesJSON. It
+// carries the fields herdr-port's orchestrator needs to dispatch work without
+// re-parsing issue files: the issue number, absolute path (the canonical issue
+// identity), feature slug, current status, and the dispatch branch name (the
+// single source of truth for worktree branch naming, matching DispatchBranch).
+type waveIssue struct {
+	Number  string `json:"number"`
+	Path    string `json:"path"`
+	Feature string `json:"feature"`
+	Status  string `json:"status"`
+	Branch  string `json:"branch"`
+}
+
+// wavesOutput is the top-level JSON envelope: an ordered array of waves, each
+// a list of waveIssue objects. Wave 0 is the first parallelizable batch;
+// subsequent waves depend on earlier ones (their blockers are in earlier waves).
+type wavesOutput struct {
+	Feature string        `json:"feature"`
+	Waves   [][]waveIssue `json:"waves"`
+}
+
+// wavesJSON scans the feature's issues, filters to the ones an automated drain
+// may dispatch — status ready-for-agent and not blocked — calls ParallelSafe to
+// group them into ordered parallel waves, and emits the result as JSON on
+// stdout. Non-ready statuses (needs-triage, needs-info, ready-for-human) are
+// excluded even though they share the "todo" bucket: `capataz issue claim`
+// only succeeds from ready-for-agent, so emitting them would make a drain spin
+// on issues it can never claim. The --json flag is required by the caller.
+func wavesJSON(feature string) error {
+	// Resolve the repo root by walking up from cwd to find the .scratch/ parent.
+	// We do it by using the primary checkout of the cwd, falling back to ".".
+	repo := "."
+	if p, err := worktree.PrimaryCheckout("."); err == nil {
+		repo = p
+	}
+
+	feats, err := Scan(repo)
+	if err != nil {
+		return err
+	}
+
+	var target *Feature
+	for i := range feats {
+		if feats[i].Slug == feature {
+			target = &feats[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("feature %q not found under %s/.scratch", feature, repo)
+	}
+
+	// Filter to issues a drain may actually claim (ready-for-agent, not blocked),
+	// then group into parallel-safe waves. Dispatchable guards the not-blocked
+	// half; the status check excludes other todo-bucket statuses (needs-triage
+	// etc.) that claim would reject.
+	var dispatchable []Issue
+	for _, iss := range target.Issues {
+		if Dispatchable(iss) && iss.Status == StatusReadyForAgent {
+			dispatchable = append(dispatchable, iss)
+		}
+	}
+	raw := ParallelSafe(dispatchable)
+
+	out := wavesOutput{Feature: feature}
+	for _, wave := range raw {
+		var w []waveIssue
+		for _, iss := range wave {
+			w = append(w, waveIssue{
+				Number:  iss.Num,
+				Path:    iss.Path,
+				Feature: iss.Feature,
+				Status:  iss.Status,
+				Branch:  DispatchBranch(iss),
+			})
+		}
+		out.Waves = append(out.Waves, w)
+	}
+	if out.Waves == nil {
+		out.Waves = [][]waveIssue{}
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
 // flagValue returns the value following name in args (e.g. --answer "text"), or
 // "" if the flag is absent. Also accepts --answer=text.
 func flagValue(args []string, name string) string {
@@ -372,5 +468,5 @@ func hasFlag(args []string, name string) bool {
 }
 
 func usageErr() error {
-	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|list|new> <path|feature> [args]")
+	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|list|new|waves> <path|feature> [args]")
 }

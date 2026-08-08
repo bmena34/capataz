@@ -8,7 +8,8 @@
 //	capataz daemon      run the background state daemon (launchd-managed)
 //	capataz hook <kind> report a Claude Code hook event (used internally)
 //	capataz install     wire up hooks + launchd agent
-//	capataz uninstall    remove hooks + launchd agent
+//	capataz uninstall   remove hooks + launchd agent
+//	capataz usage       print the live plan-usage gauge (reads Keychain; unofficial endpoint)
 package main
 
 import (
@@ -103,8 +104,24 @@ func main() {
 		run(func() error { return tui.Attach(pane) })
 	case "issue":
 		run(func() error { return issues.Run(args[1:]) })
+	case "issues":
+		// Standalone, daemon-free full-screen backlog viewer (no tmux, no daemon).
+		// Scopes to the repo at cwd, or an explicit path arg. Used by the herdr
+		// plugin pane and usable in any bare terminal.
+		logging.SetComponent("tui")
+		cwd := ""
+		if len(args) > 1 {
+			cwd = args[1]
+		}
+		run(func() error { return tui.RunIssueView(cwd) })
 	case "config":
 		run(showConfig)
+	case "usage":
+		run(runUsage)
+	case "trust-dir":
+		// Pre-seed Claude folder-trust for a directory (used by the herdr drain
+		// before dispatching an agent into a fresh worktree).
+		run(func() error { return runTrustDir(args[1:]) })
 	case "quit":
 		run(tui.Quit)
 	case "logs":
@@ -193,6 +210,7 @@ usage:
   capataz keybind attach [k]   bind prefix+k (default a) to attach a sidebar
   capataz keybind nav          bind Ctrl+h/j/k/l pane nav (nvim-aware)
   capataz statusline  show a "needs you" badge in tmux (off to remove)
+  capataz usage       print the plan-usage gauge (reads Keychain token; unofficial endpoint)
   capataz issue …     manage the local .scratch backlog: claim/resolve/status/comment/list/new (used by skills)
   capataz config      print the config file path + contents (~/.config/capataz)
   capataz install     wire up Claude Code hooks + start the daemon
