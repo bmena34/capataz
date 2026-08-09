@@ -25,11 +25,12 @@ description = "capataz's .scratch issue backlog, parallel-safe dispatch waves, a
 platforms = ["macos", "linux"]
 
 # ---------------------------------------------------------------------------
-# Build step — compiles the drain orchestrator binary.
+# Build step — compiles the plugin's binaries.
 #
 # herdr runs this once after `herdr plugin install` (or `herdr plugin link .`
-# when you explicitly trigger a build). The result is ./bin/drain, which the
-# `drain` action below invokes. bin/drain is gitignored (build artifact).
+# when you explicitly trigger a build). The results are ./bin/drain (invoked by
+# the `drain` action) and ./bin/usage-view (hosted by the `usage` pane). Both
+# are gitignored build artifacts.
 #
 # This repo requires Go — there is no prebuilt-release fallback.
 [[build]]
@@ -94,18 +95,32 @@ platforms = ["macos", "linux"]
 command = ["./bin/drain"]
 
 # ---------------------------------------------------------------------------
-# usage — plan-usage gauge popup pane.
+# usage — plan-usage + context popup pane.
 #
-# Opens a short-lived popup that runs `capataz usage`: reads the Claude
-# Code OAuth token from the macOS Keychain and prints the live plan-usage
-# gauge (session % + bar + reset time; weekly % + bar + reset time).
-# The gauge is only 4 lines (widest ~55 cols) plus the "press any key" prompt,
-# so the popup is sized in fixed cells to be as small as the content allows
-# rather than filling the screen (width/height are only honored for popups).
-# NOTE: capataz usage calls an UNOFFICIAL Anthropic endpoint — the same one
-# `claude`'s /usage shows. It is not documented and can change; the URL and
-# keychain_service are configurable in ~/.config/capataz/config.json, and
-# usage.enabled=false disables it entirely.
+# Opens a live popup (./bin/usage-view) that renders two sections and refreshes
+# every 2s until you press q:
+#
+#   Plan usage — `capataz usage` output: reads the Claude Code OAuth token from
+#                the macOS Keychain and prints the plan-usage gauge (session %
+#                + bar + reset time; weekly % + bar + reset time). Refreshed on
+#                a slow cadence (1m) because it makes a network call.
+#                NOTE: this calls an UNOFFICIAL Anthropic endpoint — the same
+#                one `claude`'s /usage shows. It is not documented and can
+#                change; the URL and keychain_service are configurable in
+#                ~/.config/capataz/config.json, and usage.enabled=false
+#                disables it entirely. capataz is OPTIONAL for this pane: if it
+#                is missing, the plan line degrades to a dim note and the
+#                context gauges still work.
+#   Context    — one gauge per herdr agent pane showing how full that agent's
+#                context window is. Each pane's session id (from `herdr agent
+#                list`) locates its Claude Code transcript, which is read
+#                directly — no capataz daemon is involved, which matters
+#                because `capataz install --herdr` installs no daemon.
+#
+# Sized in fixed cells for a table of gauges rather than the old 4-line plan
+# gauge (width/height are only honored for popups). The view is width-aware: it
+# shrinks and then drops the bars on narrow popups, and collapses excess rows
+# into a "+N more" line, so a smaller size degrades cleanly.
 #
 # open-usage.sh omits --placement/--width/--height so this declaration is the
 # single source of truth for the pane's size.
@@ -115,23 +130,23 @@ command = ["./bin/drain"]
 # or via the `usage` action below.
 [[panes]]
 id = "usage"
-title = "Capataz: Plan Usage"
+title = "Capataz: Usage & Context"
 placement = "popup"
-# Fixed cell size (border included): just big enough for the gauge + prompt.
-width = 60
-height = 9
+# Fixed cell size (border included): the plan gauge plus ~9 agent rows.
+width = 78
+height = 16
 platforms = ["macos", "linux"]
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/usage-ui.sh\""]
 
 # ---------------------------------------------------------------------------
-# usage action — open the plan-usage overlay.
+# usage action — open the plan-usage + context overlay.
 #
 # Bind in herdr's config.toml with type = "plugin_action"; action id is the
 # positional arg:
 #   herdr plugin action invoke usage
 [[actions]]
 id = "usage"
-title = "Capataz: Plan Usage"
+title = "Capataz: Usage & Context"
 platforms = ["macos", "linux"]
 command = ["./bin/open-usage.sh"]
 

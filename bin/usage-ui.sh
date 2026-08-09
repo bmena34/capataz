@@ -1,23 +1,34 @@
 #!/bin/sh
-# Plan-usage pane hosted in a herdr overlay.
+# Plan-usage + context pane hosted in a herdr popup.
 #
-# Runs `capataz usage` to print the live plan-usage gauge (reads the Claude
-# Code OAuth token from the macOS Keychain; calls an unofficial Anthropic
-# endpoint — see capataz docs). Output is plain text; exits immediately.
-# CAPATAZ_BIN lets a locally-built binary be used before `make install`.
+# Runs ./bin/usage-view, which renders two things and refreshes every 2s until
+# you press q:
 #
-# Opened via the `usage` pane entrypoint or the `usage` action.
+#   Plan usage — `capataz usage` output (Keychain token; unofficial Anthropic
+#                endpoint — see capataz docs). Optional: a missing capataz
+#                degrades to a dim note, it does not fail the pane.
+#   Context    — one gauge per herdr agent pane, read straight from each
+#                agent's Claude Code transcript (located via the session id in
+#                `herdr agent list`). No capataz daemon involved, which matters
+#                because `capataz install --herdr` installs no daemon.
+#
 # Invoked through $HERDR_PLUGIN_ROOT — a bare relative path would resolve
-# against the pane's --cwd (the focused repo dir), not the plugin root.
+# against the pane's --cwd (the focused repo dir), not the plugin root. The
+# pane's cwd is still meaningful: usage-view uses it to mark the row for the
+# pane you opened this from.
 set -eu
 
-bin="${CAPATAZ_BIN:-capataz}"
-if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then
-  printf 'capataz not found (%s) — build/install it first\n' "$bin"
-  printf '  make build && sudo make install\n'
-  printf '  or: export CAPATAZ_BIN=/path/to/capataz\n'
-  printf 'press any key to close…'; read -r _; exit 1
+root="${HERDR_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
+view="$root/bin/usage-view"
+
+if [ ! -x "$view" ]; then
+  printf 'usage-view not built — run: sh %s/scripts/build.sh\n' "$root"
+  # Fall back to the plain plan gauge so the pane still shows something useful.
+  bin="${CAPATAZ_BIN:-capataz}"
+  if command -v "$bin" >/dev/null 2>&1 || [ -x "$bin" ]; then
+    printf '\n'; "$bin" usage || true
+  fi
+  printf '\npress any key to close…'; read -r _; exit 1
 fi
 
-"$bin" usage
-printf '\npress any key to close…'; read -r _
+exec "$view"

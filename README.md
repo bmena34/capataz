@@ -13,7 +13,7 @@ This plugin wires the two together: herdr runs the substrate; capataz provides t
 ## What this plugin provides
 
 - **Backlog popup** — `capataz issues` rendered inside a herdr-managed popup pane (~70% of the terminal), scoped to the focused pane's repo (reads the repo's `.scratch` backlog). Interactive: cursor movement, status badges, feature grouping. Dismissed with `q`.
-- **Usage popup** — `capataz usage` rendered in a small popup sized to the gauge: the plan-usage gauge (herdr has no equivalent).
+- **Usage & context popup** — a live popup (refreshes every 2s, `q` to close) with two sections: the **plan-usage gauge** from `capataz usage`, and a **context gauge per herdr agent pane** showing how full each agent's context window is. Context is read straight from each agent's Claude Code transcript — located exactly via the session id herdr reports in `herdr agent list` — so it needs **no capataz daemon** (which `capataz install --herdr` deliberately doesn't install). See [Context gauges](#context-gauges).
 - **Open-backlog / usage actions** — keyboard-bindable herdr actions that open those popups in the focused pane's repo cwd.
 - **Drain action** — invokes the dispatch orchestrator (`cmd/drain`): scans the feature backlog, takes a parallel-safe wave of `ready-for-agent` issues, and for each spins up a git worktree, dispatches a fresh `capataz-work` **agent** into it (default posture — no bypass-permissions), waits for it to finish, verifies it committed, and merges the branch back (resolving conflicts with a `capataz-fix-conflict` agent when needed). Loops until the backlog drains.
 - **`worktree.created` event hook** — herdr fires this when it creates a git worktree; the drain loop uses it to coordinate dispatch.
@@ -22,7 +22,7 @@ This plugin wires the two together: herdr runs the substrate; capataz provides t
 
 - [herdr](https://herdr.dev) >= 0.8.0
 - **herdr's Claude integration installed** — `herdr integration install claude`. This is the hook that lets herdr detect Claude agent state; the drain's `herdr agent wait --until done` depends on it. **Without it the drain hangs.**
-- [capataz](https://github.com/bmena34/capataz) on PATH (or set `CAPATAZ_BIN`), built from a version that has the `issues`, `issue waves`, `usage`, and `trust-dir` subcommands (the `herdr-port` branch / once merged, `main`). The plugin shells out to all four. After building the binary, run **`capataz install --herdr`** once — the lean, herdr-only install that lays down just the skills + agents + default config the dispatched agents need (**no** capataz hooks, **no** launchd daemon; herdr owns the substrate). Plain `capataz install` also works but drags in capataz's own tmux/launchd machinery you don't need under herdr.
+- [capataz](https://github.com/bmena34/capataz) on PATH (or set `CAPATAZ_BIN`), built from a version that has the `issues`, `issue waves`, `usage`, and `trust-dir` subcommands (the `herdr-port` branch / once merged, `main`). The plugin shells out to all four. (`usage` is only needed for the plan line of the usage popup — the context gauges work without capataz installed at all.) After building the binary, run **`capataz install --herdr`** once — the lean, herdr-only install that lays down just the skills + agents + default config the dispatched agents need (**no** capataz hooks, **no** launchd daemon; herdr owns the substrate). Plain `capataz install` also works but drags in capataz's own tmux/launchd machinery you don't need under herdr.
 - Go >= 1.22 (to build the drain orchestrator — see Build below)
 
 ## Operator runbook
@@ -40,9 +40,10 @@ herdr plugin link /path/to/capataz-herdr
 herdr server reload-config
 ```
 
-### 2. Build the drain orchestrator
+### 2. Build the binaries
 
-The drain action requires a compiled binary at `./bin/drain`. Build it with:
+The drain action requires `./bin/drain` and the usage popup requires
+`./bin/usage-view`. Build both with:
 
 ```sh
 # from the capataz-herdr repo root:
@@ -72,12 +73,12 @@ type = "plugin_action"
 command = "bmena34.capataz-herdr.issues"
 description = "capataz: open backlog"
 
-# open the plan-usage popup  →  ctrl+b u
+# open the usage + context popup  →  ctrl+b u
 [[keys.command]]
 key = "prefix+u"
 type = "plugin_action"
 command = "bmena34.capataz-herdr.usage"
-description = "capataz: plan usage"
+description = "capataz: usage & context"
 ```
 
 Then `herdr server reload-config` (or restart) to apply, and `herdr config check`
@@ -97,6 +98,49 @@ herdr plugin action invoke issues
 ```
 
 The popup opens in the focused pane's repo cwd. Navigate with `j`/`k`, dismiss with `q`.
+
+### Context gauges
+
+The `usage` popup shows one gauge per herdr agent pane:
+
+```
+Plan: Enterprise / API (billed per token — no rate-limit bars)
+
+Context
+▸ capataz-herdr        51k / 1.0M   [█░░░░░░░░░]   5%
+  drain-03-usage-pane  148k / 200k  [███████▌░░]  74%
+
+q quit · refresh 2s
+```
+
+`▸` marks the pane you opened the popup from. Rows refresh every 2s; the plan
+line refreshes every minute (it makes a network call). Press `q`, `Esc` or
+`Ctrl-C` to close.
+
+**How it works.** `herdr agent list` reports each agent pane's session id, which
+names that agent's Claude Code transcript under `~/.claude/projects/`. The view
+tail-reads each transcript and takes the newest assistant turn's
+`input + cache_read + cache_creation` tokens — the same arithmetic capataz's own
+gauge uses, but daemon-free, since `capataz install --herdr` installs no daemon.
+Subagent (`isSidechain`) turns are skipped, so a session that just dispatched a
+subagent doesn't appear to have emptied out.
+
+**Setting the context window for 1M sessions.** Transcripts record a bare model
+id (`claude-opus-5`) with no `[1m]` marker, so a model offered in both 200k and
+1M forms is indistinguishable — the view assumes 200k. If you run a 1M variant,
+pin it in `~/.config/capataz/config.json` (the same key capataz's own gauge
+reads, so one setting serves both):
+
+```json
+{ "context": { "limits": { "claude-opus-5": "1m" } } }
+```
+
+`CAPATAZ_CONTEXT_LIMIT=1m` overrides every session for one run. As a safety net,
+a session measured above its assumed window widens automatically rather than
+rendering an impossible >100% bar.
+
+**Not a Claude agent?** Panes running another agent still appear, annotated
+(`codex — no context data`) rather than silently dropped.
 
 ### 6. Run a drain
 
@@ -167,6 +211,7 @@ herdr plugin unlink bmena34.capataz-herdr
 | `tmux.go` | rewritten → herdr socket CLI (`herdr worktree create`, `herdr agent prompt`) |
 | hook → daemon → dashboard broadcast | dropped entirely — herdr's own Claude integration (`herdr integration install claude`) provides agent state; capataz doesn't feed or override it |
 | usage gauge | retained as the `usage` popup pane (`capataz usage`); herdr has no equivalent |
+| context gauge (daemon-fed, `internal/daemon`) | reimplemented daemon-free in `cmd/usage`: reads transcripts directly, keyed by the session id in `herdr agent list` |
 | launchd daemon + SQLite persistence | dropped — herdr owns persistence |
 | `capataz-drain` skill (orchestrator logic) | replaced by `cmd/drain` Go binary (this repo's dispatch engine) |
 
@@ -178,16 +223,27 @@ The dispatch layer — the Go binary at `cmd/drain` — does what `capataz-drain
 herdr-plugin.toml   — plugin manifest (build step, panes, actions, events)
 go.mod              — module github.com/bmena34/capataz-herdr
 scripts/
-  build.sh          — builds ./bin/drain from ./cmd/drain (run once after link)
+  build.sh          — builds ./bin/drain and ./bin/usage-view (run once after link)
 cmd/
   drain/            — Go source for the dispatch orchestrator
+  usage/            — Go source for the usage + context popup
 bin/
   issues-ui.sh      — pane entrypoint: runs `capataz issues` in the pane cwd
   open-issues.sh    — action: opens the issues popup in the focused repo
-  usage-ui.sh       — pane entrypoint: runs `capataz usage`
+  usage-ui.sh       — pane entrypoint: runs ./bin/usage-view
   open-usage.sh     — action: opens the usage popup in the focused repo
   on-worktree.sh    — event hook: logs worktree.created events
   drain             — built orchestrator binary (gitignored, produced by build.sh)
+  usage-view        — built usage/context view (gitignored, produced by build.sh)
+```
+
+`usage-view` also runs standalone, outside herdr:
+
+```sh
+./bin/usage-view              # live view (2s refresh, q to quit)
+./bin/usage-view -once        # print one frame and exit
+./bin/usage-view -no-plan     # context only, skip the plan gauge
+./bin/usage-view -limit 1m    # override the assumed context window
 ```
 
 ## Status

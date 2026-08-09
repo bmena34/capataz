@@ -1,6 +1,8 @@
-# Built orchestrator binary (produced by scripts/build.sh)
+# Built binaries (produced by scripts/build.sh)
 bin/drain
 /drain
+bin/usage-view
+/usage-view
 
 # macOS
 .DS_Store

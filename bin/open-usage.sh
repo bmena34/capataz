@@ -1,10 +1,12 @@
 #!/bin/sh
-# Action entry point: open the `usage` overlay pane.
+# Action entry point: open the `usage` (plan usage + context) overlay pane.
 #
 # herdr runs actions non-interactively; focused-pane context (including cwd)
-# arrives as JSON in HERDR_PLUGIN_CONTEXT_JSON. The usage command is not
-# repo-scoped (it reads from the Keychain), so cwd is used only to satisfy
-# herdr's pane --cwd parameter.
+# arrives as JSON in HERDR_PLUGIN_CONTEXT_JSON. The plan gauge is not
+# repo-scoped (it reads from the Keychain), but the cwd still matters: the view
+# marks the row for the pane you opened this from by matching that cwd against
+# each agent's. That match is what identifies the originating pane, since
+# opening this popup with --focus can take herdr's own `focused` flag off it.
 #
 # Usage (from herdr keybind or CLI):
 #   herdr plugin action invoke usage
