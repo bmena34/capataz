@@ -85,15 +85,41 @@ jump, `q` closes. Feature grouping + status badges render.
 
 ---
 
-## Stage 2 — Usage gauge (read-only, safe)
+## Stage 2 — Usage + context popup (read-only, safe)
 
 ```sh
 herdr plugin action invoke usage      # overlay
-# or, plain:
-capataz usage
+# or, standalone (no herdr pane needed):
+./bin/usage-view -once
+capataz usage                         # just the plan line
 ```
-**Expected:** Session / Weekly bars with percentages + reset times.
-**Record:** numbers plausible vs. `claude`'s /usage? formatting OK in the pane?
+**Expected:** the plan gauge (Session / Weekly bars + reset times, or a plan
+line for Enterprise/API accounts), then a `Context` table with one row per herdr
+agent pane, and a `q quit · refresh 2s` footer.
+
+Check each:
+- [ ] one row per pane in `herdr agent list`; `▸` marks the pane you opened it from
+- [ ] context numbers plausible vs. that agent's own `/context`
+- [ ] the gauge climbs when you leave it open and the agent keeps working (2s refresh)
+- [ ] `q` / `Esc` closes it, and the pane's shell is usable afterwards (terminal mode restored, cursor visible)
+- [ ] rows don't shuffle between refreshes as agents change status
+
+**1M-context sessions:** transcripts record a bare `claude-opus-5` with no `[1m]`
+marker, so the view assumes 200k. If a row reads ~5x too full, pin the window:
+```sh
+./bin/usage-view -once -limit 1m      # confirm the number is right, then persist it:
+# ~/.config/capataz/config.json → { "context": { "limits": { "claude-opus-5": "1m" } } }
+```
+
+**Degradation checks (all should stay useful, none should crash):**
+```sh
+CAPATAZ_BIN=/nonexistent ./bin/usage-view -once   # dim plan note; context rows still render
+HERDR_BIN=/nonexistent   ./bin/usage-view -once   # red error line in place of the table
+COLUMNS=34 ./bin/usage-view -once                 # bars drop rather than wrapping
+```
+
+**Record:** numbers plausible vs. `claude`'s /usage and /context? formatting OK
+at the popup's size?
 
 ---
 
