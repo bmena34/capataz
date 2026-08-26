@@ -4,18 +4,32 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
-// fakeRunner drives collect() without a herdr server.
+// fakeRunner drives collect() and reportSweep() without a herdr server.
 type fakeRunner struct {
-	agents []Agent
-	err    error
-	plan   string
-	planNo error
+	agents    []Agent
+	err       error
+	plan      string
+	planNo    error
+	reported  map[string]string // pane id -> last reported token value
+	reportErr error
 }
 
 func (f *fakeRunner) AgentList() ([]Agent, error) { return f.agents, f.err }
 func (f *fakeRunner) PlanUsage() (string, error)  { return f.plan, f.planNo }
+
+func (f *fakeRunner) ReportContext(paneID, value string, _ time.Duration) error {
+	if f.reportErr != nil {
+		return f.reportErr
+	}
+	if f.reported == nil {
+		f.reported = map[string]string{}
+	}
+	f.reported[paneID] = value
+	return nil
+}
 
 func TestCollect_ReadsContextPerPane(t *testing.T) {
 	dir := t.TempDir()
@@ -148,6 +162,65 @@ func TestLabelRows_DisambiguatesCollidingBasenames(t *testing.T) {
 	labelRows(rows)
 
 	want := []string{"code/proj", "worktrees/proj", "other"}
+	for i, w := range want {
+		if rows[i].Label != w {
+			t.Errorf("row %d label: got %q, want %q", i, rows[i].Label, w)
+		}
+	}
+}
+
+// Many panes share a repo (and therefore a dir label); a session the user has
+// titled must be labeled by that title — the same terminal_title token herdr's
+// sidebar shows — or the gauges are indistinguishable.
+func TestLabelRows_PrefersTerminalTitle(t *testing.T) {
+	rows := []Row{
+		{Label: "/Users/me/code/proj", Title: "auth refactor"},
+		{Label: "/Users/me/code/proj"},
+	}
+	labelRows(rows)
+
+	if rows[0].Label != "auth refactor" {
+		t.Errorf("titled row label: got %q, want %q", rows[0].Label, "auth refactor")
+	}
+	if rows[1].Label != "proj" {
+		t.Errorf("untitled row label: got %q, want %q", rows[1].Label, "proj")
+	}
+}
+
+// Two sessions given the same name still need telling apart.
+func TestLabelRows_DisambiguatesCollidingTitles(t *testing.T) {
+	rows := []Row{
+		{Label: "/Users/me/code/proj", Title: "fix tests"},
+		{Label: "/Users/me/worktrees/proj", Title: "fix tests"},
+	}
+	labelRows(rows)
+
+	want := []string{"fix tests (code/proj)", "fix tests (worktrees/proj)"}
+	for i, w := range want {
+		if rows[i].Label != w {
+			t.Errorf("row %d label: got %q, want %q", i, rows[i].Label, w)
+		}
+	}
+}
+
+// A default pane title (the agent's name, or an echo of the cwd) is not a
+// session name — it must fall back to the dir label, not label every pane in
+// the repo "claude".
+func TestCollect_IgnoresUninformativeTitles(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{agents: []Agent{
+		{Kind: "claude", SessionID: "a", Cwd: "/repo/one", Title: "Claude"},
+		{Kind: "claude", SessionID: "b", Cwd: "/repo/two", Title: "/repo/two"},
+		{Kind: "claude", SessionID: "c", Cwd: "/repo/three", Title: "three"},
+		{Kind: "claude", SessionID: "d", Cwd: "/repo/four", Title: "  "},
+		{Kind: "claude", SessionID: "e", Cwd: "/repo/five", Title: "usage popup polish"},
+	}}
+
+	rows, err := collect(r, &limitResolver{}, dir, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"one", "two", "three", "four", "usage popup polish"}
 	for i, w := range want {
 		if rows[i].Label != w {
 			t.Errorf("row %d label: got %q, want %q", i, rows[i].Label, w)
