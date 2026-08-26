@@ -21,6 +21,8 @@
 //	-once                    render a single frame and exit (implied when not a TTY)
 //	-no-plan                 skip the plan gauge; show context only
 //	-limit         string    context window override, e.g. "1m" or "200k"
+//	-report                  run headless: push each pane's context gauge to herdr
+//	                         as pane-metadata token "context" (sidebar "$context")
 //
 // Environment:
 //
@@ -58,6 +60,7 @@ func run(args []string) error {
 	once := fs.Bool("once", false, "render a single frame and exit")
 	noPlan := fs.Bool("no-plan", false, "skip the plan gauge; show context only")
 	limit := fs.String("limit", "", `context window override, e.g. "1m" or "200k"`)
+	report := fs.Bool("report", false, "push context gauges to herdr pane metadata instead of rendering")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: usage-view [flags]\n\nFlags:\n")
@@ -82,6 +85,12 @@ func run(args []string) error {
 	herdrBin := os.Getenv("HERDR_BIN")
 	if herdrBin == "" {
 		herdrBin = "herdr"
+	}
+
+	// -report is the headless daemon mode behind the sidebar's "$context" token:
+	// no TTY, no frames — just sweep-and-push until herdr goes away.
+	if *report {
+		return runReport(&realRunner{herdrBin: herdrBin}, newLimitResolver(*limit), claudeDir(), *interval, os.Stderr)
 	}
 
 	selfCwd, _ := os.Getwd() // best-effort: only used to mark the originating pane

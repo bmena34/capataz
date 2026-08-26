@@ -15,6 +15,7 @@ This plugin wires the two together: herdr runs the substrate; capataz provides t
 - **Backlog popup** — `capataz issues` rendered inside a herdr-managed popup pane (~70% of the terminal), scoped to the focused pane's repo (reads the repo's `.scratch` backlog). Interactive: cursor movement, status badges, feature grouping. Dismissed with `q`.
 - **Usage & context popup** — a live popup (refreshes every 2s, `q` to close) with two sections: the **plan-usage gauge** from `capataz usage`, and a **context gauge per herdr agent pane** showing how full each agent's context window is. Context is read straight from each agent's Claude Code transcript — located exactly via the session id herdr reports in `herdr agent list` — so it needs **no capataz daemon** (which `capataz install --herdr` deliberately doesn't install). See [Context gauges](#context-gauges).
 - **Open-backlog / usage actions** — keyboard-bindable herdr actions that open those popups in the focused pane's repo cwd.
+- **Sidebar context gauges** — a startup hook launches a small reporter daemon that pushes each Claude pane's context gauge into herdr as pane metadata, so herdr's own sidebar can show a per-agent gauge under each session. Opt-in via one `"$context"` row in your `[ui.sidebar.agents]` config. See [Sidebar context gauges](#sidebar-context-gauges).
 - **Drain action** — invokes the dispatch orchestrator (`cmd/drain`): scans the feature backlog, takes a parallel-safe wave of `ready-for-agent` issues, and for each spins up a git worktree, dispatches a fresh `capataz-work` **agent** into it (default posture — no bypass-permissions), waits for it to finish, verifies it committed, and merges the branch back (resolving conflicts with a `capataz-fix-conflict` agent when needed). Loops until the backlog drains.
 - **`worktree.created` event hook** — herdr fires this when it creates a git worktree; the drain loop uses it to coordinate dispatch.
 
@@ -107,7 +108,7 @@ The `usage` popup shows one gauge per herdr agent pane:
 Plan: Enterprise / API (billed per token — no rate-limit bars)
 
 Context
-▸ capataz-herdr        51k / 1.0M   [█░░░░░░░░░]   5%
+▸ usage popup polish   51k / 1.0M   [█░░░░░░░░░]   5%
   drain-03-usage-pane  148k / 200k  [███████▌░░]  74%
 
 q quit · refresh 2s
@@ -116,6 +117,14 @@ q quit · refresh 2s
 `▸` marks the pane you opened the popup from. Rows refresh every 2s; the plan
 line refreshes every minute (it makes a network call). Press `q`, `Esc` or
 `Ctrl-C` to close.
+
+**Row labels.** Each row is labeled with the pane's terminal title when one is
+set — the same value herdr's sidebar shows as the `terminal_title` token — so
+naming your sessions (e.g. at Claude session startup) makes the gauges readable
+even when many agents run in the same repo. A pane with no title, or only a
+default one (the agent's name, an echo of its cwd), falls back to the repo
+directory name, parent-prefixed when basenames collide (as drain worktrees
+often do). Two panes titled identically get the dir label appended in parens.
 
 **How it works.** `herdr agent list` reports each agent pane's session id, which
 names that agent's Claude Code transcript under `~/.claude/projects/`. The view
@@ -138,6 +147,45 @@ reads, so one setting serves both):
 `CAPATAZ_CONTEXT_LIMIT=1m` overrides every session for one run. As a safety net,
 a session measured above its assumed window widens automatically rather than
 rendering an impossible >100% bar.
+
+### Sidebar context gauges
+
+The same context reading can live directly in herdr's sidebar, under each agent
+entry — no popup needed:
+
+```
+▍ auth refactor
+  ● working
+  capataz-herdr · tab 1
+  [███░░░░░░░] 34% · 349k
+```
+
+**How it works.** herdr's sidebar rows can render custom tokens reported
+through pane metadata (`$name` tokens). The plugin's `[[startup]]` hook spawns
+a pidfile-guarded reporter daemon (`usage-view -report`) that sweeps every 5s:
+the same transcript arithmetic as the popup, pushed to herdr with
+`herdr pane report-metadata --token context=… --ttl-ms 15000`. The TTL means a
+dead reporter's gauges expire off the sidebar instead of freezing; the daemon
+exits after ~1 minute of herdr being unreachable and is relaunched by the next
+server start. Its pidfile and log live in
+`~/.local/state/capataz-herdr/` (`$XDG_STATE_HOME` honored).
+
+**Opt in** by referencing the token in herdr's `config.toml` — it's ignored
+otherwise:
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  [{ token = "terminal_title", bold = true }],
+  ["state_icon", "state_text"],
+  [{ token = "workspace", dim = true }, "tab"],
+  [{ token = "$context", dim = true }],
+]
+```
+
+Then `herdr server reload-config`. To start the reporter without restarting the
+herdr server, run `./bin/context-reporter.sh` once by hand; to stop it,
+`kill $(cat ~/.local/state/capataz-herdr/context-reporter.pid)`.
 
 **Not a Claude agent?** Panes running another agent still appear, annotated
 (`codex — no context data`) rather than silently dropped.
