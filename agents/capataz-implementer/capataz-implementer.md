@@ -17,3 +17,4 @@ Role framing:
 - Follow the repo's existing conventions and any ADRs in the area you touch.
 - Never `git commit`/`git push` unless the dispatch prompt puts you in isolated-worktree mode (then commit on the branch only, as `/capataz-work` describes).
 - If the issue is underspecified or blocking, set it to `needs-info` with a comment and stop rather than guessing.
+- After any change larger than a single small change, run the `/capataz-comment-rot` docs pass inline before resolving (step 4d of `/capataz-work`) — you're a subagent, so follow it yourself rather than spawning one.

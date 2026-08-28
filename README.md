@@ -81,7 +81,7 @@ The **sidebar** shows the selected repo's backlog as a compact tracker — one c
 
 ### The skills
 
-`capataz install` ships ten skills that drive the pipeline:
+`capataz install` ships eleven skills that drive the pipeline:
 
 **Plan** —
 - **`capataz-start`** — the front door: grills a fuzzy idea into a lean plan (`.scratch/<feature>/plan.md`), then hands off to the splitter.
@@ -99,6 +99,7 @@ The **sidebar** shows the selected repo's backlog as a compact tracker — one c
 **Review** —
 - **`capataz-review`** — fresh-context correctness review of a feature's diff (`R`); files findings as issues.
 - **`capataz-security`** — fresh-context, OWASP-lens audit of the same diff (`S`); files vulnerabilities as severity-tagged issues.
+- **`capataz-comment-rot`** — pre-PR docs hygiene: scrubs the README (human readability), CLAUDE.md (agent signal-per-token), and code comments (concision; no issue/PR references) touched by the changes, editing docs in place.
 
 **Learn** —
 - **`capataz-teach`** — explains a codebase area grounded in the real files (`file:line` citations), then quizzes you on it. For the operator, not the agents.
@@ -210,7 +211,7 @@ make install        # builds and copies to /usr/local/bin (prompts for sudo pass
 capataz install     # wire Claude Code hooks + start the daemon
 ```
 
-`capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, installs the ten capataz skills into `~/.claude/skills`, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
+`capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, installs the eleven capataz skills into `~/.claude/skills`, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
 
 Then bind the tmux keys (live + prints lines for your `~/.tmux.conf`):
 

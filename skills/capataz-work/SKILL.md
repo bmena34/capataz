@@ -66,6 +66,10 @@ The subagent returns a short verdict + any gaps. Address real gaps, then resolve
 
 **If you are yourself a subagent** (capataz dispatch delegates the work to a subagent), you can't spawn another one — skip this step. The orchestrator that dispatched you runs the sanity check instead.
 
+### 4d. Docs pass (any change larger than a single small change)
+
+If your diff is more than a single small change — it touches multiple files, or changes behavior that docs describe — run the **`/capataz-comment-rot`** skill **inline** (follow its steps yourself; don't spawn a subagent, so this works in delegated dispatch too) before resolving. It scrubs the README, CLAUDE.md, and code comments your change touched for rot, and its own rules govern the pass — including that large README/CLAUDE.md changes need the user's OK first. A one-file, comment-true tweak can skip this.
+
 ### 4c. Isolated-worktree mode (only if the dispatch says so)
 
 If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (capataz dispatches parallel issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:
