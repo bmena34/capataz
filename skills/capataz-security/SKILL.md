@@ -1,6 +1,6 @@
 ---
 name: capataz-security
-description: Do a fresh-context, OWASP-focused security review of the current changes and file every real vulnerability back into the local .scratch backlog as a ready-for-agent issue. Invoked when capataz dispatches a security session (the dashboard's S key). Also use when the user says "security review the changes", "OWASP review of <feature>", or "audit this diff for vulnerabilities".
+description: Do a fresh-context, OWASP-focused security review of the current changes and file every real vulnerability back into the local .scratch backlog as a ready-for-agent issue. Run it in a fresh session. Also use when the user says "security review the changes", "OWASP review of <feature>", or "audit this diff for vulnerabilities".
 ---
 
 # capataz-security
@@ -55,4 +55,4 @@ Keep each issue a single, independently-fixable vulnerability. If you find nothi
 
 ## 4. Report
 
-Print a short summary: how many issues you filed (with their new numbers, severities, and titles), the categories they fell under, and your overall read on the change set's security posture. The new issues appear in the dashboard tracker as `todo` for the next round.
+Print a short summary: how many issues you filed (with their new numbers, severities, and titles), the categories they fell under, and your overall read on the change set's security posture. The new issues show as `todo` in the backlog (`capataz issues`) for the next round.

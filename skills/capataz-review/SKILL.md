@@ -1,6 +1,6 @@
 ---
 name: capataz-review
-description: Do an in-depth, fresh-context code review of the current changes and file every finding back into the local .scratch backlog as a ready-for-agent issue. Invoked when capataz dispatches a review session (the dashboard's R key) after a feature's issues are all resolved. Also use when the user says "review the changes and file issues" or "fresh review of <feature>".
+description: Do an in-depth, fresh-context code review of the current changes and file every finding back into the local .scratch backlog as a ready-for-agent issue. Run it in a fresh session after a feature's issues are all resolved. Also use when the user says "review the changes and file issues" or "fresh review of <feature>".
 ---
 
 # capataz-review
@@ -39,4 +39,4 @@ Keep each issue a single, independently-fixable slice. Rank by severity in the t
 
 ## 4. Report
 
-Print a short summary: how many issues you filed (with their new numbers/titles) and your overall read on whether the code and architecture are sound. The new issues appear in the dashboard tracker as `todo` for the next round.
+Print a short summary: how many issues you filed (with their new numbers/titles) and your overall read on whether the code and architecture are sound. The new issues show as `todo` in the backlog (`capataz issues`) for the next round.

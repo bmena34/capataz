@@ -230,10 +230,9 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 
 	// Step c: start a Claude agent running /capataz-work in the worktree pane and
 	// reliably deliver the task (retrying if a fresh claude drops the first prompt).
-	// capataz-work claims, implements, commits on the branch, and resolves,
-	// self-detecting isolated-worktree mode from the pane's cwd.
+	// capataz-work claims, implements, commits on the branch, and resolves.
 	agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
-	prompt := fmt.Sprintf("run /capataz-work on %s in this worktree", iss.Path)
+	prompt := workPrompt(iss)
 	if err := startAgentWithTask(runner, agentName, paneID, prompt, cfg.SkipPermissions, iss.Number, logf); err != nil {
 		return failClean("error", err)
 	}
@@ -371,7 +370,7 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 	fmt.Fprintf(cfg.Out, "Would dispatch %d issue(s):\n\n", len(batch))
 	for i, iss := range batch {
 		agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
-		prompt := fmt.Sprintf("run /capataz-work on %s in this worktree", iss.Path)
+		prompt := workPrompt(iss)
 		posture := "--allowedTools " + allowedTools
 		if cfg.SkipPermissions {
 			posture = "--dangerously-skip-permissions"
@@ -394,4 +393,14 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 		fmt.Fprintf(cfg.Out, "             : OR start fix-conflict agent + wait + remove  (on conflict)\n\n")
 	}
 	fmt.Fprintf(cfg.Out, "(No worktrees created, no agents started, no merges run.)\n")
+}
+
+// workPrompt is the task given to each dispatched agent. It states the
+// isolated-worktree contract explicitly because capataz-work only commits on
+// its branch when the prompt says so, and the drain fails an issue whose
+// branch has no new commits.
+func workPrompt(iss WaveIssue) string {
+	return fmt.Sprintf("run /capataz-work on the issue at %s. You are in an isolated git worktree on branch %s: "+
+		"commit your work on this branch when you resolve, and do not merge or switch branches — the drain merges it back.",
+		iss.Path, iss.Branch)
 }

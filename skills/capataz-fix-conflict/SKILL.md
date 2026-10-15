@@ -1,13 +1,13 @@
 ---
 name: capataz-fix-conflict
-description: Resolve a merge that capataz left in a conflicted state after merging a parallel issue's branch back into the base, then complete the merge. Invoked when capataz dispatches a fresh session (in the primary checkout) after a branch merge conflicted. Also use when the user says "fix the conflicted merge" or "resolve this in-progress merge and commit".
+description: Resolve a merge that capataz left in a conflicted state after merging a parallel issue's branch back into the base, then complete the merge. Invoked when `capataz drain` starts a fresh agent in the primary checkout after a branch merge conflicted. Also use when the user says "fix the conflicted merge" or "resolve this in-progress merge and commit".
 ---
 
 # capataz-fix-conflict
 
 You are a **fresh context**, deliberately started with no memory of how either side of this merge was written — so you can judge the right resolution from the code itself rather than inheriting either side's assumptions.
 
-capataz runs parallel issues in isolated git worktrees, each on a branch named `capataz/<feature>-<NN>-<slug>`. When the operator triggers merge-back, capataz merges each branch into the base in the **primary checkout**. A clean merge just lands; a **conflicting** merge is left in its conflicted state, and capataz spawns you (this session, in the primary checkout) to resolve it.
+capataz runs parallel issues in isolated git worktrees, each on a branch named `capataz/<feature>-<NN>-<slug>`. After each issue, `capataz drain` merges its branch into the base in the **primary checkout**. A clean merge just lands; a **conflicting** merge is left in its conflicted state, and the drain starts you (a fresh agent in the primary checkout) to resolve it.
 
 The dispatch prompt names the branch:
 
@@ -46,7 +46,7 @@ If something fails, it usually means your resolution dropped or double-applied b
 git add -A && git commit
 ```
 
-This completes the in-progress merge — git already has the merge commit message staged, so no message editing is needed. **Never commit `.scratch/`.** It's the local-only backlog, ignored by the global git excludes file `capataz install` sets up. Never `git add -f` it, and never add `.scratch` to a repo's `.gitignore` — that line would get pushed. Do **not** start, resume, or trigger any **other** branch merges; you resolve this one merge only. capataz drives the merge-back sequence.
+This completes the in-progress merge — git already has the merge commit message staged, so no message editing is needed. **Never commit `.scratch/`.** It's the local-only backlog, ignored by the global git excludes file `capataz install` sets up. Never `git add -f` it, and never add `.scratch` to a repo's `.gitignore` — that line would get pushed. Do **not** start, resume, or trigger any **other** branch merges; you resolve this one merge only. The drain drives the merge-back sequence.
 
 ### 5. Report
 

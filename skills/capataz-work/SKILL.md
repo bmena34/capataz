@@ -19,7 +19,7 @@ Issues live as markdown files in `.scratch/`, one feature per directory:
   - `Blocked by: NN, NN` — issue numbers in the same feature that must be `resolved` first
 - The body describes what to build and its acceptance criteria; `## Answer` and `## Comments` sections are appended at the bottom.
 
-The file is the source of truth. Change `Status:` **only** through `capataz issue …` so the dashboard and any other agents stay consistent. This skill uses `capataz issue claim` / `resolve` / `status`; run `capataz issue` with no args to see the full subcommand list.
+The file is the source of truth. Change `Status:` **only** through `capataz issue …` so the backlog viewer and any other agents stay consistent. This skill uses `capataz issue claim` / `resolve` / `status`; run `capataz issue` with no args to see the full subcommand list.
 
 ## Process
 
@@ -42,7 +42,7 @@ Read the full issue file — body, acceptance criteria, and any `## Comments`.
 capataz issue claim .scratch/<feature>/issues/NN-<slug>.md
 ```
 
-Do this **before** any code changes so the dashboard shows the issue is taken and concurrent agents skip it.
+Do this **before** any code changes so the backlog shows the issue is taken and concurrent agents skip it.
 
 ### 4. Implement the vertical slice
 
@@ -62,9 +62,9 @@ If the dispatch prompt (or the user) asks for a sanity check, do this **before r
 - Any obvious breakage — references to files/symbols that don't exist, a claimed-passing test that wasn't run, a criterion silently skipped?
 - Nothing that looks hallucinated or half-done.
 
-The subagent returns a short verdict + any gaps. Address real gaps, then resolve. This is a guard against fooling yourself — keep it light; the in-depth review is a separate fresh-context pass (the dashboard's `R`).
+The subagent returns a short verdict + any gaps. Address real gaps, then resolve. This is a guard against fooling yourself — keep it light; the in-depth review is a separate fresh-context pass (`capataz-review`).
 
-**If you are yourself a subagent** (capataz dispatch delegates the work to a subagent), you can't spawn another one — skip this step. The orchestrator that dispatched you runs the sanity check instead.
+**If you are yourself a subagent**, you can't spawn another one — skip this step and tell whoever dispatched you that the sanity check is still owed.
 
 ### 4d. Docs pass (any change larger than a single small change)
 
@@ -72,7 +72,7 @@ If your diff is more than a single small change — it touches multiple files, o
 
 ### 4c. Isolated-worktree mode (only if the dispatch says so)
 
-If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (capataz dispatches parallel issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:
+If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (`capataz drain` dispatches issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:
 
 - **Commit when you resolve.** Do your work as normal, but as part of resolving, commit it on that branch:
 
@@ -80,7 +80,7 @@ If the dispatch prompt tells you that you are running in an **isolated git workt
   git add -A && git commit -m "<feature>/NN: <what you did>"
   ```
 
-  Do **not** merge and do **not** switch branches — capataz merges the branch back into the base later (operator-triggered), and a fresh `capataz-fix-conflict` session handles any conflict.
+  Do **not** merge and do **not** switch branches — the drain merges the branch back into the base, and a `capataz-fix-conflict` agent handles any conflict.
 - **The issue path in the prompt is absolute.** It points at the primary checkout's `.scratch/` (which is gitignored and therefore absent in the worktree). Use that absolute path verbatim for `capataz issue claim/resolve` — never a relative one.
 
 In the normal (non-worktree) case, behavior is unchanged: don't commit unless the user asks; just surface the diff.
