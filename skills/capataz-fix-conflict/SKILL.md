@@ -46,7 +46,7 @@ If something fails, it usually means your resolution dropped or double-applied b
 git add -A && git commit
 ```
 
-This completes the in-progress merge — git already has the merge commit message staged, so no message editing is needed. Do **not** start, resume, or trigger any **other** branch merges; you resolve this one merge only. capataz drives the merge-back sequence.
+This completes the in-progress merge — git already has the merge commit message staged, so no message editing is needed. **Never commit `.scratch/`.** It's the local-only backlog, ignored by the global git excludes file `capataz install` sets up. Never `git add -f` it, and never add `.scratch` to a repo's `.gitignore` — that line would get pushed. Do **not** start, resume, or trigger any **other** branch merges; you resolve this one merge only. capataz drives the merge-back sequence.
 
 ### 5. Report
 

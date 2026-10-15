@@ -97,4 +97,5 @@ If you're re-launched on a backlog that's partly done, just start the loop: `res
 - **Don't implement issues in your own thread** — always delegate to a `capataz-work` subagent, so your context stays thin and the drain scales.
 - **Don't nest merges or start unrelated ones** — you merge only this feature's branches, one at a time.
 - **Don't stop for confirmation.** Autonomous means autonomous. Stop only when your scope is drained or when reporting genuinely stuck issues.
+- **Never commit `.scratch/`.** It's the local-only backlog, ignored globally by `capataz install`. No `git add -f` of it, and never add `.scratch` to a repo's `.gitignore`.
 - **In bounded mode, respect the bound.** Never work an issue that isn't in the enumerated set, and never re-scan for newly-ready siblings. The set is exhaustive by contract; pulling in extras defeats the operator's selection.

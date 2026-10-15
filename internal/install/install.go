@@ -71,6 +71,12 @@ func Install(skills, agents fs.FS) error {
 	}
 	fmt.Printf("✓ daemon installed and started via launchd (%s)\n", paths.LaunchdLabel())
 
+	if p, err := ensureScratchIgnored(); err != nil {
+		fmt.Printf("! could not add %s to the global git excludes file (continuing): %v\n", scratchPattern, err)
+	} else {
+		fmt.Printf("✓ %s ignored globally via %s\n", scratchPattern, p)
+	}
+
 	// Skills are a convenience layer, not core wiring — install them last and
 	// never let a copy failure abort the install: by here hooks + config + the
 	// daemon are already up, and aborting would leave settings.json pointing at a

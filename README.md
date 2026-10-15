@@ -57,6 +57,8 @@ Issues are plain markdown, one feature per directory:
 <repo>/.scratch/<feature>/issues/NN-slug.md
 ```
 
+The backlog is local-only. `capataz install` adds `.scratch/` to your global git excludes file (`core.excludesFile`, default `~/.config/git/ignore`), so it is never committed or pushed, and no repo needs a `.gitignore` entry for it.
+
 ```markdown
 # Add the login form
 
@@ -211,7 +213,7 @@ make install        # builds and copies to /usr/local/bin (prompts for sudo pass
 capataz install     # wire Claude Code hooks + start the daemon
 ```
 
-`capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, installs the eleven capataz skills into `~/.claude/skills`, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
+`capataz install` merges hooks into `~/.claude/settings.json` (backing up the original), installs a `launchd` agent for the background daemon, installs the eleven capataz skills into `~/.claude/skills`, adds `.scratch/` to your global git excludes, and writes a default config. **Hooks load when a Claude session starts**, so restart any sessions you already have running.
 
 Then bind the tmux keys (live + prints lines for your `~/.tmux.conf`):
 

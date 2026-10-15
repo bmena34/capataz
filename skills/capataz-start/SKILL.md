@@ -38,7 +38,7 @@ Before writing the plan, play back your understanding — the goals, constraints
 
 ### 4. Write the one artifact
 
-Pick a short, kebab-case **feature slug** (e.g. `parallel-workflow`), confirm it with the user, and write `.scratch/<feature>/plan.md`. Create the directory if needed (`mkdir -p .scratch/<feature>`). Keep it **lean** — a PRD a splitter can consume, not a spec novel. A good shape:
+Pick a short, kebab-case **feature slug** (e.g. `parallel-workflow`), confirm it with the user, and write `.scratch/<feature>/plan.md`. Create the directory if needed (`mkdir -p .scratch/<feature>`). `.scratch/` is local-only and already ignored globally by `capataz install` — don't add it to the repo's `.gitignore` and don't commit it. Keep it **lean** — a PRD a splitter can consume, not a spec novel. A good shape:
 
 ```markdown
 # <Feature title>

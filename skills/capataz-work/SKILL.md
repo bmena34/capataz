@@ -85,6 +85,8 @@ If the dispatch prompt tells you that you are running in an **isolated git workt
 
 In the normal (non-worktree) case, behavior is unchanged: don't commit unless the user asks; just surface the diff.
 
+Either way: **Never commit `.scratch/`.** It's the local-only backlog, ignored by the global git excludes file `capataz install` sets up. Never `git add -f` it, and never add `.scratch` to a repo's `.gitignore` — that line would get pushed.
+
 ### 5. Resolve it
 
 When the acceptance criteria are met and checks pass:
