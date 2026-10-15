@@ -1,0 +1,104 @@
+// drain is the hands-off drain orchestrator for capataz-herdr.
+//
+// It scans a feature's issue backlog via `capataz issue waves --json`, takes
+// a parallel-safe wave of ready issues up to the concurrency cap, dispatches a
+// Claude agent per issue into a herdr worktree, and re-scans until the backlog
+// is drained.
+//
+// Usage:
+//
+//	drain [flags] <feature>
+//
+// Flags:
+//
+//	-concurrency  int    max concurrent agents per wave (0 = unlimited, default 3)
+//	-timeout      int    per-agent wait timeout in milliseconds (default 3600000)
+//	-skip-perms         pass --dangerously-skip-permissions to dispatched agents
+//	-repo         string repo path for worktree creation (default: cwd)
+//	-dry-run            print plan without creating worktrees or starting agents
+//
+// Environment:
+//
+//	CAPATAZ_BIN   path to the capataz binary (default "capataz")
+//	HERDR_BIN     path to the herdr binary   (default "herdr")
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+)
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "drain: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string) error {
+	fs := flag.NewFlagSet("drain", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	concurrency := fs.Int("concurrency", 3, "max concurrent agents per wave (0 = unlimited)")
+	timeoutMS := fs.Int("timeout", 3_600_000, "per-agent wait timeout in milliseconds")
+	skipPerms := fs.Bool("skip-perms", false, "pass --dangerously-skip-permissions to dispatched agents")
+	repoPath := fs.String("repo", "", "repo path for worktree creation (default: current directory)")
+	dryRun := fs.Bool("dry-run", false, "print planned dispatch without creating worktrees or starting agents")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: drain [flags] <feature>\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nEnvironment:\n")
+		fmt.Fprintf(os.Stderr, "  CAPATAZ_BIN  path to capataz binary (default \"capataz\")\n")
+		fmt.Fprintf(os.Stderr, "  HERDR_BIN    path to herdr binary   (default \"herdr\")\n")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		return fmt.Errorf("feature argument required")
+	}
+	feature := fs.Arg(0)
+
+	// Resolve repo path: flag takes precedence, then cwd.
+	repo := *repoPath
+	if repo == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		repo = cwd
+	}
+
+	// Resolve binary paths from environment, falling back to defaults.
+	capatazBin := os.Getenv("CAPATAZ_BIN")
+	if capatazBin == "" {
+		capatazBin = "capataz"
+	}
+	herdrBin := os.Getenv("HERDR_BIN")
+	if herdrBin == "" {
+		herdrBin = "herdr"
+	}
+
+	runner := &realRunner{
+		capatazBin: capatazBin,
+		herdrBin:   herdrBin,
+	}
+
+	cfg := Config{
+		Feature:         feature,
+		Concurrency:     *concurrency,
+		SkipPermissions: *skipPerms,
+		AgentTimeoutMS:  *timeoutMS,
+		RepoPath:        repo,
+		DryRun:          *dryRun,
+		Out:             os.Stdout,
+	}
+
+	return Drain(cfg, runner)
+}
