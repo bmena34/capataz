@@ -1,4 +1,4 @@
-package tui
+package issueview
 
 import (
 	"os"
@@ -12,13 +12,10 @@ import (
 	"github.com/bmena34/capataz/internal/worktree"
 )
 
-// RunIssueView launches a standalone, daemon-free full-screen backlog viewer for
-// the repo containing cwd. It reads the .scratch backlog straight off disk (no
-// tmux, no daemon, no dashboard model) and refreshes on a cheap mtime probe —
-// exactly what a herdr plugin pane (or any bare terminal) needs. This is the
-// read-only sibling of the dashboard's in-model issues popup; dispatch actions
-// (R/S/p/merge) deliberately live in the dashboard, which owns the sessions.
-func RunIssueView(cwd string) error {
+// Run launches a full-screen, read-only backlog viewer for the repo containing
+// cwd (resolved to its primary checkout). It reads the .scratch backlog straight
+// off disk and refreshes on a cheap mtime probe.
+func Run(cwd string) error {
 	if cwd == "" {
 		if wd, err := os.Getwd(); err == nil {
 			cwd = wd
@@ -26,7 +23,7 @@ func RunIssueView(cwd string) error {
 	}
 	repo := cwd
 	if p, err := worktree.PrimaryCheckout(cwd); err == nil {
-		repo = p // scope the backlog to the primary checkout, like the dashboard
+		repo = p // the backlog lives in the primary checkout
 	}
 	m := issueViewModel{repo: repo, repoName: short(repo)}
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
@@ -59,7 +56,7 @@ func (m issueViewModel) Init() tea.Cmd {
 }
 
 // loadIssuesCmd scans the repo's backlog off the render path and flattens the
-// features into a single list, mirroring the dashboard's loadIssues order.
+// features into a single list in Scan order.
 func loadIssuesCmd(repo string) tea.Cmd {
 	return func() tea.Msg {
 		mod, _ := issues.ScratchModTime(repo)
@@ -173,7 +170,7 @@ func (m issueViewModel) View() string {
 	return panel("Issues · "+m.repoName, body, m.w, m.h, true)
 }
 
-// footer mirrors the dashboard popup's status line: attention-first bucket
+// footer is the status line: attention-first bucket
 // counts, the parallel-safe advisory when there is one, then the key hints.
 func (m issueViewModel) footer() string {
 	help := footerStyle.Render("j/k move · r reload · q quit")
@@ -193,8 +190,7 @@ func (m issueViewModel) footer() string {
 }
 
 // issueViewLines builds the feature-grouped display lines and the index of the
-// cursor line. It mirrors the dashboard's issueLines but without the multi-select
-// checkbox (this view is read-only). Only issue rows are selectable.
+// cursor line. Only issue rows are selectable.
 func issueViewLines(list []issues.Issue, cursor int) ([]string, int) {
 	var lines []string
 	cursorLine := 0
