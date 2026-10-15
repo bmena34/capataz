@@ -1,18 +1,17 @@
-// usage-view is the plan-usage + context popup for capataz-herdr.
+// Package usageview is the plan-usage + context popup behind
+// `capataz usage-view` (the herdr plugin's usage pane).
 //
 // It renders two things in one pane:
 //
 //   - Plan usage — whatever `capataz usage` prints (the Keychain-backed plan
-//     gauge). Optional: if capataz isn't installed the view still works.
+//     gauge). A failure becomes a one-line note; the context gauges still work.
 //   - Context — one gauge per herdr agent pane, showing how full that agent's
 //     context window is. Sessions are matched to transcripts exactly, via the
-//     session id herdr reports in `herdr agent list`, and read straight off disk:
-//     no capataz daemon is involved, which matters because `capataz install
-//     --herdr` deliberately installs no daemon.
+//     session id herdr reports in `herdr agent list`, and read straight off disk.
 //
 // Usage:
 //
-//	usage-view [flags]
+//	capataz usage-view [flags]
 //
 // Flags:
 //
@@ -26,12 +25,12 @@
 //
 // Environment:
 //
-//	CAPATAZ_BIN            path to the capataz binary (default "capataz")
+//	CAPATAZ_BIN            path to the capataz binary (default: this executable)
 //	HERDR_BIN              path to the herdr binary   (default "herdr")
 //	CAPATAZ_CONTEXT_LIMIT  same as -limit
 //	CLAUDE_CONFIG_DIR      Claude Code state dir (default ~/.claude)
 //	NO_COLOR               disable ANSI color
-package main
+package usageview
 
 import (
 	"flag"
@@ -44,14 +43,8 @@ import (
 	"time"
 )
 
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "usage-view: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func run(args []string) error {
+// Run parses args and runs the command; it is `capataz usage-view`.
+func Run(args []string) error {
 	fs := flag.NewFlagSet("usage-view", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -63,10 +56,10 @@ func run(args []string) error {
 	report := fs.Bool("report", false, "push context gauges to herdr pane metadata instead of rendering")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: usage-view [flags]\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage: capataz usage-view [flags]\n\nFlags:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nEnvironment:\n")
-		fmt.Fprintf(os.Stderr, "  CAPATAZ_BIN            path to capataz binary (default \"capataz\")\n")
+		fmt.Fprintf(os.Stderr, "  CAPATAZ_BIN            path to capataz binary (default: this executable)\n")
 		fmt.Fprintf(os.Stderr, "  HERDR_BIN              path to herdr binary   (default \"herdr\")\n")
 		fmt.Fprintf(os.Stderr, "  CAPATAZ_CONTEXT_LIMIT  same as -limit\n")
 		fmt.Fprintf(os.Stderr, "  CLAUDE_CONFIG_DIR      Claude Code state dir (default ~/.claude)\n")
@@ -78,10 +71,7 @@ func run(args []string) error {
 		*interval = 250 * time.Millisecond // guard against a busy-loop refresh
 	}
 
-	capatazBin := os.Getenv("CAPATAZ_BIN")
-	if capatazBin == "" {
-		capatazBin = "capataz"
-	}
+	capatazBin := selfBin()
 	herdrBin := os.Getenv("HERDR_BIN")
 	if herdrBin == "" {
 		herdrBin = "herdr"
@@ -269,4 +259,16 @@ func oneLine(s string) string {
 		s = strings.TrimSpace(s[:i])
 	}
 	return s
+}
+
+// selfBin is the capataz binary to shell out to: CAPATAZ_BIN if set, else the
+// running executable (this command is itself a capataz subcommand).
+func selfBin() string {
+	if b := os.Getenv("CAPATAZ_BIN"); b != "" {
+		return b
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "capataz"
 }

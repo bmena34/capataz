@@ -1,4 +1,5 @@
-// drain is the hands-off drain orchestrator for capataz-herdr.
+// Package drain is the hands-off drain orchestrator behind `capataz drain`
+// (the herdr plugin's drain action).
 //
 // It scans a feature's issue backlog via `capataz issue waves --json`, takes
 // a parallel-safe wave of ready issues up to the concurrency cap, dispatches a
@@ -7,7 +8,7 @@
 //
 // Usage:
 //
-//	drain [flags] <feature>
+//	capataz drain [flags] <feature>
 //
 // Flags:
 //
@@ -19,9 +20,9 @@
 //
 // Environment:
 //
-//	CAPATAZ_BIN   path to the capataz binary (default "capataz")
+//	CAPATAZ_BIN   path to the capataz binary (default: this executable)
 //	HERDR_BIN     path to the herdr binary   (default "herdr")
-package main
+package drain
 
 import (
 	"flag"
@@ -29,14 +30,8 @@ import (
 	"os"
 )
 
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "drain: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func run(args []string) error {
+// Run parses args and runs the command; it is `capataz drain`.
+func Run(args []string) error {
 	fs := flag.NewFlagSet("drain", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -47,11 +42,11 @@ func run(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "print planned dispatch without creating worktrees or starting agents")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: drain [flags] <feature>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: capataz drain [flags] <feature>\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nEnvironment:\n")
-		fmt.Fprintf(os.Stderr, "  CAPATAZ_BIN  path to capataz binary (default \"capataz\")\n")
+		fmt.Fprintf(os.Stderr, "  CAPATAZ_BIN  path to capataz binary (default: this executable)\n")
 		fmt.Fprintf(os.Stderr, "  HERDR_BIN    path to herdr binary   (default \"herdr\")\n")
 	}
 
@@ -76,10 +71,7 @@ func run(args []string) error {
 	}
 
 	// Resolve binary paths from environment, falling back to defaults.
-	capatazBin := os.Getenv("CAPATAZ_BIN")
-	if capatazBin == "" {
-		capatazBin = "capataz"
-	}
+	capatazBin := selfBin()
 	herdrBin := os.Getenv("HERDR_BIN")
 	if herdrBin == "" {
 		herdrBin = "herdr"
@@ -101,4 +93,16 @@ func run(args []string) error {
 	}
 
 	return Drain(cfg, runner)
+}
+
+// selfBin is the capataz binary to shell out to: CAPATAZ_BIN if set, else the
+// running executable (this command is itself a capataz subcommand).
+func selfBin() string {
+	if b := os.Getenv("CAPATAZ_BIN"); b != "" {
+		return b
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "capataz"
 }
