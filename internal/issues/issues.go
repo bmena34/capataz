@@ -1,7 +1,7 @@
 // Package issues reads the local-markdown issue backlog for a repo — the
 // .scratch/<feature>/issues/NN-slug.md files created by the mattpocock-style
 // planning skills (/to-issues, /triage, /wayfinder). The files are the source
-// of truth: capataz parses them for the dashboard and rewrites the Status line
+// of truth: capataz parses them for the backlog viewer and drain, and rewrites the Status line
 // when an agent claims or resolves an issue.
 //
 // The format is deliberately tolerant. An issue file has a title (the first
@@ -134,7 +134,7 @@ func Done(status string) bool {
 }
 
 // Bucket collapses an issue's granular status into the four categories the
-// dashboard tracker shows: done (terminal), blocked (waiting on another issue),
+// backlog viewer shows: done (terminal), blocked (waiting on another issue),
 // doing (an agent has claimed it), or todo (everything else that's open). It
 // reads the shared vocabulary table for known statuses; Blocked (a derived
 // flag, not a status) still wins over the table's non-terminal bucket, and any
@@ -324,7 +324,7 @@ func markBlocked(list []Issue) {
 
 // parseIssue reads and parses one issue file. Parse failures degrade to a
 // best-effort Issue (at minimum a title from the filename) rather than an error
-// — the dashboard should still show a malformed file rather than hide it.
+// — the viewer should still show a malformed file rather than hide it.
 func parseIssue(path, feature string) Issue {
 	iss := Issue{Feature: feature, Path: path}
 	base := filepath.Base(path)
@@ -512,26 +512,6 @@ func ParallelSafe(list []Issue) [][]Issue {
 	return waves
 }
 
-// MutuallyParallelSafe reports whether a hand-picked set of issues is safe to
-// dispatch in parallel: every pair must have disjoint Touches AND no Blocked-by
-// edge between them, and no issue may have unknown scope (empty Touches, which
-// conservatively conflicts with everything). Unlike ParallelSafe it does not
-// filter by bucket — the set is exactly what the operator selected — it only
-// judges pairwise safety. A set of fewer than two issues is trivially safe.
-func MutuallyParallelSafe(set []Issue) bool {
-	for i := range set {
-		if len(set[i].Touches) == 0 {
-			return false // unknown scope: never safe
-		}
-		for j := i + 1; j < len(set); j++ {
-			if touchesOverlap(set[i], set[j]) || blockingEdge(set[i], set[j]) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 // Dispatchable reports whether an issue is actually workable right now, and so
 // worth spawning a fresh worktree+session for. Only Bucket "todo" qualifies
 // (ready-for-agent / claimable / open) — a "done" (resolved/wontfix/closed),
@@ -547,24 +527,6 @@ func Dispatchable(iss Issue) bool {
 // dispatch cuts `capataz/<feature>-<NN>-<slug>`, so Round 2's merge-back scans
 // only branches carrying it.
 const BranchPrefix = "capataz/"
-
-// MatchBranch finds the issue in list that a dispatched worktree branch belongs
-// to. A dispatch branch is `capataz/<feature>-<NN>-<slug>`; the reliable join
-// key is Feature + Num, so MatchBranch pairs each issue with its expected branch
-// (via the same construction dispatch uses) and returns the first match. It
-// returns (issue, true) on a hit, (zero, false) otherwise — including for any
-// branch without the capataz/ prefix.
-func MatchBranch(branch string, list []Issue) (Issue, bool) {
-	if !strings.HasPrefix(branch, BranchPrefix) {
-		return Issue{}, false
-	}
-	for _, iss := range list {
-		if DispatchBranch(iss) == branch {
-			return iss, true
-		}
-	}
-	return Issue{}, false
-}
 
 // DispatchBranch returns the worktree branch name for an issue —
 // `capataz/<feature>-<NN>-<slug>`, using "--" for an unnumbered issue. It is the

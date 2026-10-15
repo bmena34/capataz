@@ -636,50 +636,6 @@ func TestParallelSafeEmptyTouchesNeverPairs(t *testing.T) {
 	}
 }
 
-func TestMutuallyParallelSafe(t *testing.T) {
-	cases := []struct {
-		name string
-		set  []Issue
-		want bool
-	}{
-		{"disjoint pair", []Issue{
-			{Num: "01", Touches: []string{"internal/tui/a.go"}},
-			{Num: "02", Touches: []string{"internal/store/db.go"}},
-		}, true},
-		{"overlapping pair", []Issue{
-			{Num: "01", Touches: []string{"internal/tui"}},
-			{Num: "02", Touches: []string{"internal/tui/a.go"}},
-		}, false},
-		{"blocking edge", []Issue{
-			{Num: "01", Touches: []string{"a.go"}},
-			{Num: "02", Touches: []string{"b.go"}, BlockedBy: []string{"01"}},
-		}, false},
-		{"unknown scope", []Issue{
-			{Num: "01", Touches: []string{"a.go"}},
-			{Num: "02"}, // no Touches -> unsafe
-		}, false},
-		{"single issue trivially safe", []Issue{
-			{Num: "01", Touches: []string{"a.go"}},
-		}, true},
-		{"empty set trivially safe", nil, true},
-		{"three disjoint", []Issue{
-			{Num: "01", Touches: []string{"a.go"}},
-			{Num: "02", Touches: []string{"b.go"}},
-			{Num: "03", Touches: []string{"c.go"}},
-		}, true},
-		{"three with one overlap", []Issue{
-			{Num: "01", Touches: []string{"a.go"}},
-			{Num: "02", Touches: []string{"b.go"}},
-			{Num: "03", Touches: []string{"a.go"}}, // overlaps 01
-		}, false},
-	}
-	for _, c := range cases {
-		if got := MutuallyParallelSafe(c.set); got != c.want {
-			t.Errorf("%s: MutuallyParallelSafe = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 func TestDispatchable(t *testing.T) {
 	cases := []struct {
 		name string
@@ -712,7 +668,7 @@ func TestNonNumberedFile(t *testing.T) {
 	}
 }
 
-func TestDispatchBranchAndMatch(t *testing.T) {
+func TestDispatchBranch(t *testing.T) {
 	list := []Issue{
 		{Feature: "login", Num: "01", Slug: "form", Status: "resolved"},
 		{Feature: "login", Num: "02", Slug: "cookies", Status: "claimed"},
@@ -727,18 +683,6 @@ func TestDispatchBranchAndMatch(t *testing.T) {
 		t.Fatalf("DispatchBranch (unnumbered) = %q, want %q", got, "capataz/billing----notes")
 	}
 
-	// MatchBranch round-trips DispatchBranch.
-	if iss, ok := MatchBranch("capataz/login-01-form", list); !ok || iss.Num != "01" {
-		t.Fatalf("MatchBranch(login-01) = %+v, %v", iss, ok)
-	}
-	// A branch without the capataz/ prefix never matches.
-	if _, ok := MatchBranch("main", list); ok {
-		t.Fatal("MatchBranch(main) matched, want no match")
-	}
-	// A capataz/ branch with no backing issue doesn't match.
-	if _, ok := MatchBranch("capataz/login-99-gone", list); ok {
-		t.Fatal("MatchBranch(unknown) matched, want no match")
-	}
 }
 
 func TestScratchModTimeMissingScratch(t *testing.T) {

@@ -1,0 +1,88 @@
+# capataz — herdr plugin
+#
+# The capataz repo is itself the plugin. Every pane, action and hook below runs
+# the one binary the build step produces, ./bin/capataz.
+#
+# Local dev:
+#   herdr plugin link /path/to/capataz
+#   herdr server reload-config   (or restart herdr)
+#
+# Two gotchas:
+#   1. Pane entrypoint paths resolve against the pane's --cwd, NOT the plugin
+#      root. Fix: command = ["sh","-c","exec \"$HERDR_PLUGIN_ROOT/bin/<script>.sh\""]
+#   2. Actions receive the focused pane's cwd via HERDR_PLUGIN_CONTEXT_JSON (a
+#      JSON blob), not a plain env var; the open-*.sh scripts parse it.
+
+id = "bmena34.capataz"
+name = "Capataz"
+version = "0.2.0"
+min_herdr_version = "0.8.0"
+description = "capataz's .scratch issue backlog, plan-usage and per-agent context gauges, and drain orchestrator as a herdr plugin."
+platforms = ["macos", "linux"]
+
+# ---------------------------------------------------------------------------
+# Build step — compiles ./bin/capataz (gitignored). herdr runs it after
+# `herdr plugin install`; after `herdr plugin link`, run it by hand. Requires Go.
+[[build]]
+platforms = ["macos", "linux"]
+command = ["sh", "scripts/build.sh"]
+
+# ---------------------------------------------------------------------------
+# issues — the backlog popup pane: `capataz issues` scoped to the pane's cwd,
+# in a centered popup at ~70% of the terminal. width/height are only honored
+# when placement = "popup". open-issues.sh omits size flags so this
+# declaration is the single source of truth for the pane's size.
+[[panes]]
+id = "issues"
+title = "Capataz: Backlog"
+placement = "popup"
+width = "70%"
+height = "70%"
+platforms = ["macos", "linux"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/issues-ui.sh\""]
+
+# issues action — open the backlog popup in the focused pane's repo.
+#   herdr plugin action invoke issues
+[[actions]]
+id = "issues"
+title = "Capataz: Open Backlog"
+platforms = ["macos", "linux"]
+command = ["./bin/open-issues.sh"]
+
+# ---------------------------------------------------------------------------
+# usage — plan-usage + context popup pane (`capataz usage-view`), refreshing
+# every 2s until q. The plan gauge reads the Claude Code OAuth token from the
+# macOS Keychain and calls an UNOFFICIAL Anthropic endpoint (the one `claude`'s
+# /usage uses); it can change, and usage.enabled=false in
+# ~/.config/capataz/config.json turns it off. The context gauges read each
+# agent's transcript directly and always work.
+#
+# Fixed cell size (border included): the plan gauge plus ~9 agent rows. The
+# view shrinks, then drops bars, on narrow popups.
+[[panes]]
+id = "usage"
+title = "Capataz: Usage & Context"
+placement = "popup"
+width = 78
+height = 16
+platforms = ["macos", "linux"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/usage-ui.sh\""]
+
+# usage action — open the plan-usage + context popup.
+#   herdr plugin action invoke usage
+[[actions]]
+id = "usage"
+title = "Capataz: Usage & Context"
+platforms = ["macos", "linux"]
+command = ["./bin/open-usage.sh"]
+
+# ---------------------------------------------------------------------------
+# startup — launch the sidebar context reporter. Runs once per server start
+# (and again on live handoff); the hook exits immediately, leaving a
+# pidfile-guarded background process (`capataz usage-view -report`) that pushes
+# each Claude pane's context gauge into herdr as the pane-metadata token
+# "context". Show it with a "$context" row in [ui.sidebar.agents]; without that
+# row the tokens are ignored.
+[[startup]]
+platforms = ["macos", "linux"]
+command = ["./bin/context-reporter.sh"]

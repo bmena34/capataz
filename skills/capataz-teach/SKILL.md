@@ -5,7 +5,7 @@ description: Explain a codebase area grounded in the real files (with file:line 
 
 # capataz-teach
 
-Help someone learn a real codebase area by **reading it with them**: explain how a chosen part actually works, grounded in the files on disk and cited with `file:line`, then check their understanding with a short quiz whose answers come from the code — not from memory. This is a deliberately stripped-down take on mattpocock's `teach`: no `MISSION.md`, no HTML lessons, no learning-records — just the terminal, the code, and a quiz. It's an **operator tool**: you run it interactively for a human. There's no dispatch loop, no dashboard interaction, and by default nothing is written to disk.
+Help someone learn a real codebase area by **reading it with them**: explain how a chosen part actually works, grounded in the files on disk and cited with `file:line`, then check their understanding with a short quiz whose answers come from the code — not from memory. This is a deliberately stripped-down take on mattpocock's `teach`: no `MISSION.md`, no HTML lessons, no learning-records — just the terminal, the code, and a quiz. It's an **operator tool**: you run it interactively for a human. There's no dispatch loop, and by default nothing is written to disk.
 
 Everything you say must be **grounded in the actual files**. Never explain from general knowledge or what the code "probably" does — open it, read it, and cite it. If you're unsure, go read the file before you claim anything.
 
@@ -13,7 +13,7 @@ Everything you say must be **grounded in the actual files**. Never explain from 
 
 Figure out **what to teach**:
 
-- If the user named an area ("teach me the daemon", "explain `internal/issues`", "how does dispatch work"), use it.
+- If the user named an area ("teach me the drain", "explain `internal/issues`", "how does dispatch work"), use it.
 - If they were vague ("quiz me on the codebase", "teach me something"), look around first — `git ls-files`, read the top-level `README.md` / `CLAUDE.md` / any ADRs — then propose 2–3 concrete areas (a package, a subsystem, a data flow) and let them pick. Don't guess and dive in.
 
 Scope it to something teachable in one sitting — one package, one data flow, one subsystem — not the whole repo. If the ask is too broad, narrow it and say so.
@@ -30,7 +30,7 @@ Before explaining anything, **read the code**:
 
 Walk the user through the area. Structure it so it builds — start with the shape (what this area is responsible for, its main pieces), then how a real path flows through it, then the subtleties.
 
-**Cite as you go.** Every concrete claim points at where it lives, as a clickable `file:line` reference (e.g. "the sweep prunes dead-pane sessions every 5s — `internal/daemon/daemon.go:212`"). The citations are the whole point: they let the learner jump straight to the code and verify you, and they keep you honest. Prefer a citation over a paraphrase; quote a short key line when it makes the point.
+**Cite as you go.** Every concrete claim points at where it lives, as a clickable `file:line` reference (e.g. "merge-back is serialized behind a mutex — `internal/drain/drain.go:81`"). The citations are the whole point: they let the learner jump straight to the code and verify you, and they keep you honest. Prefer a citation over a paraphrase; quote a short key line when it makes the point.
 
 Keep it conversational and terminal-native — plain prose and short excerpts, not a generated document. Check in as you go ("want me to go deeper on X, or move on?") rather than dumping everything at once.
 
@@ -38,7 +38,7 @@ Keep it conversational and terminal-native — plain prose and short excerpts, n
 
 End with a **short quiz** (3–5 questions) on what you just covered. Ask them one at a time, wait for each answer, and **verify their answer against the actual code**, not against your own recollection:
 
-- Favor questions with a definite, code-checkable answer — "what happens to a session whose tmux pane dies?", "which function derives the parallel-safe waves?", "why does dispatch pre-seed the trust dialog?" — over trivia.
+- Favor questions with a definite, code-checkable answer — "what does the drain do when an agent finishes without committing?", "which function derives the parallel-safe waves?", "why does dispatch pre-seed the trust dialog?" — over trivia.
 - When they answer, re-read the relevant file if needed, then confirm or correct with a `file:line` citation so they can see it for themselves. If they're partly right, say exactly which part and point at the code.
 - Keep it encouraging and low-stakes — this is a learning check, not an exam. Adapt difficulty to how they're doing.
 

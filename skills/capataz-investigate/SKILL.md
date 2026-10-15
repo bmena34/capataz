@@ -53,4 +53,4 @@ The issue must carry, at minimum: the **repro** (the red command), the **root ca
 
 ### 7. Report
 
-Print a short summary: the repro command, the confirmed root cause (defect + one-line causal chain), and the issue you filed or annotated (its number + title). The fix issue appears in the dashboard tracker as `todo` for a `capataz-work` agent to pick up.
+Print a short summary: the repro command, the confirmed root cause (defect + one-line causal chain), and the issue you filed or annotated (its number + title). The fix issue shows as `todo` in the backlog (`capataz issues`) for a `capataz-work` agent to pick up.

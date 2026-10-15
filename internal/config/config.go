@@ -11,79 +11,8 @@ import (
 
 // Config is capataz's user-tunable settings.
 type Config struct {
-	Usage    Usage    `json:"usage"`
-	Sidebar  Sidebar  `json:"sidebar"`
-	Review   Review   `json:"review"`
-	Dispatch Dispatch `json:"dispatch"`
-	Parallel Parallel `json:"parallel"`
-	Context  Context  `json:"context"`
-	Resume   Resume   `json:"resume"`
-	Models   Models   `json:"models"`
-}
-
-// Resume controls retention of ended sessions so they survive a tmux/machine
-// restart and can be resumed later.
-type Resume struct {
-	// MaxRetained caps how many ended sessions the daemon keeps persisted (the
-	// most-recent by last_change). Older ended rows are trimmed. Default 20.
-	MaxRetained int `json:"max_retained"`
-	// AutoAttach controls what bare `capataz` does from a plain terminal when no
-	// tmux server is running (a fresh boot / killed server). True resumes the
-	// most recently active retained session and attaches to it — "return to my
-	// work" — leaving the other retained rows one Enter away in the sidebar.
-	// False (or nothing retained) falls back to the first-session prompt.
-	// Default true.
-	AutoAttach bool `json:"auto_attach"`
-}
-
-// Models routes a model alias to each dispatched agent role, so heavier reasoning
-// goes where it earns its cost (reviews/security/conflicts on opus) and routine
-// implementation stays cheap (sonnet). The recognized aliases are the fixed set
-// opus/sonnet/fable/haiku/default; "default" (or empty, or any unrecognized value)
-// means "don't pass a model" — the dispatched claude/subagent inherits its own
-// default. Parsing is deliberately tolerant: an unknown alias is treated as
-// inherit rather than rejected, so a typo degrades gracefully instead of crashing.
-//
-// The recognized roles are:
-//
-//   - implementer  — the capataz-work implementer (single-issue dispatch, drain
-//     subagents). Default sonnet.
-//   - reviewer     — the fresh-context correctness review (R). Default opus.
-//   - security     — the fresh-context OWASP security review (S). Default opus.
-//   - conflict     — the capataz-fix-conflict resolver. Default opus.
-//   - orchestrator — the session that hands work to subagents (single-issue
-//     orchestration + drain). Default "default" (inherit).
-type Models struct {
-	Implementer  string `json:"implementer"`
-	Reviewer     string `json:"reviewer"`
-	Security     string `json:"security"`
-	Conflict     string `json:"conflict"`
-	Orchestrator string `json:"orchestrator"`
-}
-
-// Aliases is the fixed set of recognized model aliases. "default" means inherit
-// (pass no --model / no per-subagent model).
-var modelAliases = map[string]bool{
-	"opus":    true,
-	"sonnet":  true,
-	"fable":   true,
-	"haiku":   true,
-	"default": true,
-}
-
-// Resolve normalizes an alias to a value safe to thread into a dispatch: a
-// recognized alias other than "default" is returned as-is; "default", empty, or
-// any unrecognized value collapses to "" (inherit — pass no model). Tolerant by
-// design so a typo in config.json degrades to inherit rather than breaking a
-// dispatch.
-func (Models) Resolve(alias string) string {
-	if alias == "" || alias == "default" {
-		return ""
-	}
-	if modelAliases[alias] {
-		return alias
-	}
-	return "" // unknown alias: inherit rather than pass a bad --model
+	Usage   Usage   `json:"usage"`
+	Context Context `json:"context"`
 }
 
 // Context tunes the context-window gauge. The transcript records only the bare
@@ -96,40 +25,6 @@ type Context struct {
 	Limits map[string]string `json:"limits"`
 }
 
-// Parallel controls the hands-off drain (the dashboard's p key).
-type Parallel struct {
-	// MaxConcurrency caps how many issues the drain orchestrator works at once —
-	// i.e. the most capataz-work subagents running concurrently in a single wave.
-	// Overlapping/over-cap issues just fall to the next wave. Default 3; keeps one
-	// orchestrator context and the machine from being swamped by a wide wave.
-	MaxConcurrency int `json:"max_concurrency"`
-}
-
-// Dispatch controls how capataz launches the sessions it SPAWNS with an
-// opening prompt (the fresh R/S reviews, the fix-conflict resolver, and the
-// drain's fallback when no managed session is attached). A drain handed to the
-// attached session — the preferred path — is unaffected: it runs under that
-// session's own permission posture.
-type Dispatch struct {
-	// SkipPermissions, when true, runs those spawned sessions with
-	// `claude --dangerously-skip-permissions` so fully unattended work never
-	// stalls on Claude Code's interactive permission prompt. Default FALSE:
-	// surfacing "needs permission" is the dashboard's job — a spawned session
-	// that hits a prompt shows as NEEDS PERM and the operator is one keystroke
-	// away. Opt in only if you want spawned drains/reviews to run with no
-	// approvals at all (those agents can then use any tool without asking).
-	// It never applies to the interactive session you open by hand (prefix+n).
-	SkipPermissions bool `json:"skip_permissions"`
-}
-
-// Review controls the optional review steps in the issue workflow.
-type Review struct {
-	// SanityCheck, when true, asks the capataz-work skill to run a quick
-	// sanity-check subagent over its diff before resolving an issue — a guard
-	// against an agent fooling itself, not a full review (that's the R key).
-	SanityCheck bool `json:"sanity_check"`
-}
-
 // Usage controls the live plan-usage gauge. NOTE: it reads the Claude Code OAuth
 // token from your Keychain and calls an UNOFFICIAL Anthropic endpoint (the same
 // data `claude`'s /usage shows). That endpoint isn't documented and can change
@@ -139,15 +34,9 @@ type Usage struct {
 	Enabled         bool   `json:"enabled"`
 	URL             string `json:"url"`
 	KeychainService string `json:"keychain_service"`
-	PollSeconds     int    `json:"poll_seconds"`
 	// PlanType overrides auto-detection: "pro" shows session/weekly rate-limit bars;
 	// "api" shows an enterprise/per-token label instead. Leave blank to auto-detect.
 	PlanType string `json:"plan_type"`
-}
-
-// Sidebar controls the dashboard sidebar pane.
-type Sidebar struct {
-	Width int `json:"width"` // columns for the dashboard pane on attach / new
 }
 
 // Default returns the built-in configuration.
@@ -157,18 +46,6 @@ func Default() Config {
 			Enabled:         true,
 			URL:             "https://api.anthropic.com/api/oauth/usage",
 			KeychainService: "Claude Code-credentials",
-			PollSeconds:     300,
-		},
-		Sidebar:  Sidebar{Width: 40},
-		Dispatch: Dispatch{SkipPermissions: false},
-		Parallel: Parallel{MaxConcurrency: 3},
-		Resume:   Resume{MaxRetained: 20, AutoAttach: true},
-		Models: Models{
-			Implementer:  "sonnet",
-			Reviewer:     "opus",
-			Security:     "opus",
-			Conflict:     "opus",
-			Orchestrator: "default", // inherit
 		},
 	}
 }
@@ -186,38 +63,6 @@ func Load() Config {
 	}
 	if c.Usage.KeychainService == "" {
 		c.Usage.KeychainService = d.Usage.KeychainService
-	}
-	if c.Usage.PollSeconds <= 0 {
-		c.Usage.PollSeconds = d.Usage.PollSeconds
-	}
-	if c.Sidebar.Width <= 0 {
-		c.Sidebar.Width = d.Sidebar.Width
-	}
-	if c.Parallel.MaxConcurrency <= 0 {
-		c.Parallel.MaxConcurrency = d.Parallel.MaxConcurrency
-	}
-	if c.Resume.MaxRetained <= 0 {
-		c.Resume.MaxRetained = d.Resume.MaxRetained
-	}
-	// A partial "models" block (some roles set, others omitted) unmarshals the
-	// absent roles to "", which would silently drop their default. Re-seed each
-	// empty role from the defaults so an unspecified role keeps its built-in
-	// model. A role explicitly set to "default" stays "default" (inherit) — only
-	// the empty (absent) case falls back here.
-	if c.Models.Implementer == "" {
-		c.Models.Implementer = d.Models.Implementer
-	}
-	if c.Models.Reviewer == "" {
-		c.Models.Reviewer = d.Models.Reviewer
-	}
-	if c.Models.Security == "" {
-		c.Models.Security = d.Models.Security
-	}
-	if c.Models.Conflict == "" {
-		c.Models.Conflict = d.Models.Conflict
-	}
-	if c.Models.Orchestrator == "" {
-		c.Models.Orchestrator = d.Models.Orchestrator
 	}
 	return c
 }

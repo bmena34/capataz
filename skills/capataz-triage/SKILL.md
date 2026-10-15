@@ -78,8 +78,8 @@ capataz issue status  .scratch/<feature>/issues/NN-<slug>.md wontfix
 
 **Still blocked?** If you couldn't get the answer needed (the user deferred, or a decision is pending elsewhere), leave it `needs-info` and note in a comment exactly what's outstanding, so the next triage pass resumes cleanly. Don't promote an issue you can't actually specify.
 
-Only ever change `Status:` through `capataz issue …`, never by hand-editing the line — that's what keeps the dashboard and other agents consistent.
+Only ever change `Status:` through `capataz issue …`, never by hand-editing the line — that's what keeps the backlog viewer and other agents consistent.
 
 ### 5. Report
 
-Print a short summary: which issues you promoted to `ready-for-agent` (with the `Touches:` you assigned), which you closed `wontfix` (with the reason), and any you left `needs-info` (with what's still open). The promoted ones now appear as dispatchable `todo` in the dashboard tracker, ready for `capataz-work` — one at a time or in a parallel wave.
+Print a short summary: which issues you promoted to `ready-for-agent` (with the `Touches:` you assigned), which you closed `wontfix` (with the reason), and any you left `needs-info` (with what's still open). The promoted ones now show as dispatchable `todo` in the backlog, ready for `capataz-work` — one at a time, or in parallel waves via `capataz drain`.

@@ -2,17 +2,11 @@ package main
 
 // capataz usage — headless plan-usage gauge.
 //
-// Reads the Claude Code OAuth token from the macOS Keychain (same path the
-// daemon uses) and calls the configured usage endpoint. This is an UNOFFICIAL
+// Reads the Claude Code OAuth token from the macOS Keychain and calls the configured usage endpoint. This is an UNOFFICIAL
 // Anthropic endpoint (the same one `claude`'s /usage command hits). It is not
 // publicly documented and can change or disappear — hence the URL and keychain
 // service name are configurable, and config.Usage.Enabled lets you turn the
 // whole feature off.
-//
-// The fetch logic below mirrors internal/daemon/usage.go. The daemon functions
-// are unexported (they run inside a long-lived process), so this command
-// replicates the minimal subset needed for a one-shot CLI call rather than
-// refactoring the daemon package.
 
 import (
 	"encoding/json"
@@ -44,7 +38,7 @@ func runUsage() error {
 }
 
 // usageFetch reads the OAuth token from the Keychain and calls the usage
-// endpoint, returning a parsed result. Mirrors daemon.fetchUsage.
+// endpoint, returning a parsed result.
 func usageFetch(cfg config.Usage) (usageResult, error) {
 	token := usageKeychainToken(cfg.KeychainService)
 	if token == "" {
@@ -126,7 +120,7 @@ type usageResult struct {
 }
 
 // usageKeychainToken reads the Claude Code OAuth access token from the macOS
-// Keychain. Mirrors daemon.keychainToken.
+// Keychain.
 func usageKeychainToken(service string) string {
 	out, err := exec.Command("security", "find-generic-password", "-s", service, "-w").Output()
 	if err != nil {

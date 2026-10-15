@@ -7,7 +7,7 @@ description: Break a plan, PRD, or loose idea into tracer-bullet vertical slices
 
 Take a plan / PRD / loose idea and turn it into a set of independently-workable issues in this repo's `.scratch/` backlog. This is the capataz-native replacement for mattpocock's `/to-issues`: same tracer-bullet vertical-slice discipline, same on-disk format, **plus** a `Touches:` line per issue that predicts which files/dirs the slice will modify. capataz uses `Touches` + `Blocked by` to derive **parallel-safe waves** — which issues can be dispatched to concurrent agents without colliding — so getting `Touches` right is what makes safe parallel work possible.
 
-**Where these issues go.** Once published, the operator dispatches them from the capataz dashboard — one at a time, or a parallel-safe wave with `p` — each to a fresh `capataz-work` agent in its own git worktree; a `capataz-review` pass later files follow-up issues. So write every slice **self-contained and agent-ready** (a fresh agent with no memory of this session will implement it), and get `Touches` right — that's what lets a wave run in parallel without collisions. (Run `capataz issue` with no args for the full CLI.)
+**Where these issues go.** Once published, the operator runs them — one at a time with `capataz-work`, or as parallel-safe waves with `capataz drain <feature>`, each a fresh `capataz-work` agent in its own git worktree; a `capataz-review` pass later files follow-up issues. So write every slice **self-contained and agent-ready** (a fresh agent with no memory of this session will implement it), and get `Touches` right — that's what lets a wave run in parallel without collisions. (Run `capataz issue` with no args for the full CLI.)
 
 ## What "good" looks like
 
@@ -82,7 +82,7 @@ The header block should end up looking like:
     Status: ready-for-agent
     Type: task
     Blocked by: 01
-    Touches: internal/store/, internal/daemon/daemon.go
+    Touches: internal/drain/, internal/issues/issues.go
 
 Leave `Status: ready-for-agent` — that's what marks an issue dispatchable.
 

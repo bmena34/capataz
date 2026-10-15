@@ -135,7 +135,7 @@ func claimCLI(path string, force bool) error {
 
 // readStatus reads the current Status of an issue file by reusing parseIssue
 // (the same tolerant header parser Scan uses), so claim sees exactly the status
-// the dashboard does. Returns "" when the file is unreadable or has no Status
+// the viewer does. Returns "" when the file is unreadable or has no Status
 // line — normStatus("") never matches a claimable state, so a malformed file is
 // treated as not-claimable rather than silently claimed.
 func readStatus(path string) string {
@@ -326,7 +326,7 @@ func appendSection(path, heading, body string) error {
 }
 
 // list prints the backlog for a repo, grouped by feature — a plain-text view
-// for scripts and debugging (the dashboard has its own renderer).
+// for scripts and debugging (`capataz issues` is the interactive view).
 func list(repo string) error {
 	feats, err := Scan(repo)
 	if err != nil {
