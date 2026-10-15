@@ -1,5 +1,5 @@
 #!/bin/sh
-# Action entry point: open the `usage` (plan usage + context) overlay pane.
+# Action entry point: open the `usage` (plan usage + context) popup pane.
 #
 # herdr runs actions non-interactively; focused-pane context (including cwd)
 # arrives as JSON in HERDR_PLUGIN_CONTEXT_JSON. The plan gauge is not
@@ -22,8 +22,7 @@ cwd=$(printf '%s' "$ctx" | sed -n 's/.*"focused_pane_cwd":"\([^"]*\)".*/\1/p')
 # declaration in herdr-plugin.toml — omit --placement/--width/--height here so
 # that manifest stays the single source of truth (a --placement flag overrides it).
 exec herdr plugin pane open \
-  --plugin bmena34.capataz-herdr \
+  --plugin bmena34.capataz \
   --entrypoint usage \
   --cwd "$cwd" \
-  --env "CAPATAZ_BIN=${CAPATAZ_BIN:-capataz}" \
   --focus

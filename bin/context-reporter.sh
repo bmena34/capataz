@@ -1,11 +1,11 @@
 #!/bin/sh
 # Startup hook: launch the sidebar context reporter as a single-instance daemon.
 #
-# The reporter (usage-view -report) polls each agent pane's Claude Code
+# The reporter (`capataz usage-view -report`) polls each agent pane's Claude Code
 # transcript and pushes a compact context gauge back into herdr as the
 # pane-metadata token "context" (herdr pane report-metadata --token). Sidebar
-# agent rows render it with the "$context" token — see README "Sidebar context
-# gauges" for the config.toml rows.
+# agent rows render it with the "$context" token — see the README for the
+# config.toml row.
 #
 # herdr startup hooks must exit (they run once per server start and again on
 # live handoff), so this backgrounds the reporter behind a pidfile: a repeat
@@ -23,7 +23,7 @@ set -eu
 # reporter can also be started straight from a shell in the repo.
 root="${HERDR_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 
-state="${XDG_STATE_HOME:-$HOME/.local/state}/capataz-herdr"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/capataz"
 mkdir -p "$state"
 pidfile="$state/context-reporter.pid"
 
@@ -33,6 +33,6 @@ fi
 
 # 5s is plenty for a sidebar gauge and keeps the herdr shell-outs cheap; the
 # reporter only logs sweep failures, so the log stays small.
-nohup "$root/bin/usage-view" -report -interval 5s \
+nohup "$root/bin/capataz" usage-view -report -interval 5s \
   >>"$state/context-reporter.log" 2>&1 &
 echo $! >"$pidfile"

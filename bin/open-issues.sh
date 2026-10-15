@@ -1,5 +1,5 @@
 #!/bin/sh
-# Action entry point: open the `issues` overlay pane in the focused pane's repo.
+# Action entry point: open the `issues` popup pane in the focused pane's repo.
 #
 # herdr runs actions non-interactively and passes context (including the focused
 # pane's cwd) as JSON in HERDR_PLUGIN_CONTEXT_JSON — NOT as a plain env var and
@@ -20,8 +20,7 @@ cwd=$(printf '%s' "$ctx" | sed -n 's/.*"focused_pane_cwd":"\([^"]*\)".*/\1/p')
 # herdr-plugin.toml — omit --placement/--width/--height here so that manifest
 # stays the single source of truth (a --placement flag would override it).
 exec herdr plugin pane open \
-  --plugin bmena34.capataz-herdr \
+  --plugin bmena34.capataz \
   --entrypoint issues \
   --cwd "$cwd" \
-  --env "CAPATAZ_BIN=${CAPATAZ_BIN:-capataz}" \
   --focus

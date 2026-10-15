@@ -1,76 +1,47 @@
-# capataz-herdr — herdr plugin
+# capataz — herdr plugin
 #
-# Brings capataz's workflow layer (.scratch issue backlog, capataz issue CLI,
-# ParallelSafe dispatch waves, drain orchestrator, skills) into herdr as a
-# first-class plugin.
+# The capataz repo is itself the plugin. Every pane, action and hook below runs
+# the one binary the build step produces, ./bin/capataz.
 #
 # Local dev:
-#   herdr plugin link /Users/brandon/code/capataz-herdr
+#   herdr plugin link /path/to/capataz
 #   herdr server reload-config   (or restart herdr)
 #
-# CAPATAZ_BIN — override the capataz binary path before `make install`:
-#   export CAPATAZ_BIN=/Users/brandon/code/capataz/capataz
-#
-# Two proven gotchas from the 0.8.0 spike (see experiments/herdr-plugin/README.md):
-#   1. Pane entrypoint paths resolve vs the pane --cwd, NOT the plugin root.
-#      Fix: command = ["sh","-c","exec \"$HERDR_PLUGIN_ROOT/bin/<script>.sh\""]
-#   2. Actions receive focused-pane cwd via HERDR_PLUGIN_CONTEXT_JSON (JSON blob)
-#      not a plain env var; open-issues.sh parses focused_pane_cwd from it.
+# Two gotchas:
+#   1. Pane entrypoint paths resolve against the pane's --cwd, NOT the plugin
+#      root. Fix: command = ["sh","-c","exec \"$HERDR_PLUGIN_ROOT/bin/<script>.sh\""]
+#   2. Actions receive the focused pane's cwd via HERDR_PLUGIN_CONTEXT_JSON (a
+#      JSON blob), not a plain env var; the open-*.sh scripts parse it.
 
-id = "bmena34.capataz-herdr"
+id = "bmena34.capataz"
 name = "Capataz"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.8.0"
-description = "capataz's .scratch issue backlog, parallel-safe dispatch waves, and drain orchestrator as a herdr plugin. Popup issue view, hands-off drain action, worktree-event hook."
+description = "capataz's .scratch issue backlog, plan-usage and per-agent context gauges, and drain orchestrator as a herdr plugin."
 platforms = ["macos", "linux"]
 
 # ---------------------------------------------------------------------------
-# Build step — compiles the plugin's binaries.
-#
-# herdr runs this once after `herdr plugin install` (or `herdr plugin link .`
-# when you explicitly trigger a build). The results are ./bin/drain (invoked by
-# the `drain` action) and ./bin/usage-view (hosted by the `usage` pane). Both
-# are gitignored build artifacts.
-#
-# This repo requires Go — there is no prebuilt-release fallback.
+# Build step — compiles ./bin/capataz (gitignored). herdr runs it after
+# `herdr plugin install`; after `herdr plugin link`, run it by hand. Requires Go.
 [[build]]
 platforms = ["macos", "linux"]
 command = ["sh", "scripts/build.sh"]
 
 # ---------------------------------------------------------------------------
-# issues — the backlog popup pane.
-#
-# Opens capataz's daemon-free full-screen issue viewer (`capataz issues`) in a
-# centered popup hosted by herdr, sized to ~70% of the terminal (width/height
-# are only honored when placement = "popup"; an "overlay" always fills the
-# screen). herdr restores focus when it exits. CAPATAZ_BIN lets a locally-built
-# binary be used before `make install`.
-#
-# open-issues.sh omits --placement/--width/--height so this declaration is the
-# single source of truth for the pane's size.
-#
-# Opened via:
-#   herdr plugin pane open --plugin bmena34.capataz-herdr --entrypoint issues --cwd <repo>
-# or via the `issues` action below.
+# issues — the backlog popup pane: `capataz issues` scoped to the pane's cwd,
+# in a centered popup at ~70% of the terminal. width/height are only honored
+# when placement = "popup". open-issues.sh omits size flags so this
+# declaration is the single source of truth for the pane's size.
 [[panes]]
 id = "issues"
 title = "Capataz: Backlog"
 placement = "popup"
-# ~70% of the terminal area. PopupSize accepts a percentage ("^(100|[1-9][0-9]?)%$")
-# or an integer cell count (border included).
 width = "70%"
 height = "70%"
 platforms = ["macos", "linux"]
-# Resolve via $HERDR_PLUGIN_ROOT — herdr evaluates a pane's command relative
-# to the pane's --cwd, which is the focused repo dir (not the plugin root).
-# A bare "./bin/issues-ui.sh" would look in the repo and fail.
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/issues-ui.sh\""]
 
-# ---------------------------------------------------------------------------
-# issues action — open the backlog overlay in the focused pane's repo.
-#
-# Bind in herdr's config.toml with type = "plugin_action"; action id is the
-# positional arg (--plugin is optional trailing flag):
+# issues action — open the backlog popup in the focused pane's repo.
 #   herdr plugin action invoke issues
 [[actions]]
 id = "issues"
@@ -79,70 +50,25 @@ platforms = ["macos", "linux"]
 command = ["./bin/open-issues.sh"]
 
 # ---------------------------------------------------------------------------
-# drain action — invoke the dispatch orchestrator.
+# usage — plan-usage + context popup pane (`capataz usage-view`), refreshing
+# every 2s until q. The plan gauge reads the Claude Code OAuth token from the
+# macOS Keychain and calls an UNOFFICIAL Anthropic endpoint (the one `claude`'s
+# /usage uses); it can change, and usage.enabled=false in
+# ~/.config/capataz/config.json turns it off. The context gauges read each
+# agent's transcript directly and always work.
 #
-# The orchestrator binary (cmd/drain) is implemented in issue 03. This entry
-# declares the full action surface so later slices don't need to touch this
-# file. The binary at ./bin/drain is the built output of cmd/drain.
-#
-# Usage:
-#   herdr plugin action invoke drain
-[[actions]]
-id = "drain"
-title = "Capataz: Drain Backlog"
-platforms = ["macos", "linux"]
-# issue 03 implements the orchestrator binary at ./bin/drain.
-command = ["./bin/drain"]
-
-# ---------------------------------------------------------------------------
-# usage — plan-usage + context popup pane.
-#
-# Opens a live popup (./bin/usage-view) that renders two sections and refreshes
-# every 2s until you press q:
-#
-#   Plan usage — `capataz usage` output: reads the Claude Code OAuth token from
-#                the macOS Keychain and prints the plan-usage gauge (session %
-#                + bar + reset time; weekly % + bar + reset time). Refreshed on
-#                a slow cadence (1m) because it makes a network call.
-#                NOTE: this calls an UNOFFICIAL Anthropic endpoint — the same
-#                one `claude`'s /usage shows. It is not documented and can
-#                change; the URL and keychain_service are configurable in
-#                ~/.config/capataz/config.json, and usage.enabled=false
-#                disables it entirely. capataz is OPTIONAL for this pane: if it
-#                is missing, the plan line degrades to a dim note and the
-#                context gauges still work.
-#   Context    — one gauge per herdr agent pane showing how full that agent's
-#                context window is. Each pane's session id (from `herdr agent
-#                list`) locates its Claude Code transcript, which is read
-#                directly — no capataz daemon is involved, which matters
-#                because `capataz install --herdr` installs no daemon.
-#
-# Sized in fixed cells for a table of gauges rather than the old 4-line plan
-# gauge (width/height are only honored for popups). The view is width-aware: it
-# shrinks and then drops the bars on narrow popups, and collapses excess rows
-# into a "+N more" line, so a smaller size degrades cleanly.
-#
-# open-usage.sh omits --placement/--width/--height so this declaration is the
-# single source of truth for the pane's size.
-#
-# Opened via:
-#   herdr plugin pane open --plugin bmena34.capataz-herdr --entrypoint usage
-# or via the `usage` action below.
+# Fixed cell size (border included): the plan gauge plus ~9 agent rows. The
+# view shrinks, then drops bars, on narrow popups.
 [[panes]]
 id = "usage"
 title = "Capataz: Usage & Context"
 placement = "popup"
-# Fixed cell size (border included): the plan gauge plus ~9 agent rows.
 width = 78
 height = 16
 platforms = ["macos", "linux"]
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/usage-ui.sh\""]
 
-# ---------------------------------------------------------------------------
-# usage action — open the plan-usage + context overlay.
-#
-# Bind in herdr's config.toml with type = "plugin_action"; action id is the
-# positional arg:
+# usage action — open the plan-usage + context popup.
 #   herdr plugin action invoke usage
 [[actions]]
 id = "usage"
@@ -151,26 +77,12 @@ platforms = ["macos", "linux"]
 command = ["./bin/open-usage.sh"]
 
 # ---------------------------------------------------------------------------
-# startup — launch the sidebar context reporter.
-#
-# Runs once per server start (and again on live handoff). The hook itself
-# exits immediately, leaving a pidfile-guarded daemon (usage-view -report)
-# that pushes each Claude pane's context gauge into herdr as the pane-metadata
-# token "context". Render it in the sidebar by adding a "$context" row to
-# [ui.sidebar.agents] in herdr's config.toml — see README "Sidebar context
-# gauges". Purely additive: without that config row, the tokens are ignored.
+# startup — launch the sidebar context reporter. Runs once per server start
+# (and again on live handoff); the hook exits immediately, leaving a
+# pidfile-guarded background process (`capataz usage-view -report`) that pushes
+# each Claude pane's context gauge into herdr as the pane-metadata token
+# "context". Show it with a "$context" row in [ui.sidebar.agents]; without that
+# row the tokens are ignored.
 [[startup]]
 platforms = ["macos", "linux"]
 command = ["./bin/context-reporter.sh"]
-
-# ---------------------------------------------------------------------------
-# worktree.created event hook.
-#
-# herdr fires this when it creates a git worktree. In the drain loop capataz
-# uses this to detect the new worktree and dispatch a capataz-work subagent
-# into it. The current handler (on-worktree.sh) logs the event JSON — the
-# full dispatch logic lands with the orchestrator in issue 03.
-[[events]]
-on = "worktree.created"
-platforms = ["macos", "linux"]
-command = ["./bin/on-worktree.sh"]

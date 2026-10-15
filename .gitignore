@@ -1,5 +1,6 @@
-# compiled binary (same name as the module dir)
+# compiled binaries (make build, and the plugin's scripts/build.sh)
 /capataz
+/bin/capataz
 
 # goreleaser output
 /dist/
