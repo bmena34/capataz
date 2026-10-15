@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // Runner is the interface behind every herdr and capataz shell-out this view
@@ -26,11 +24,6 @@ type Runner interface {
 	// polls it on a much slower cadence than the context gauges, which are just
 	// local file reads.
 	PlanUsage() (string, error)
-
-	// ReportContext pushes a pane's context gauge to herdr as the pane-metadata
-	// token "context" (rendered by sidebar rows as "$context"), expiring after
-	// ttl if not refreshed. Used by -report; the popup never calls it.
-	ReportContext(paneID, value string, ttl time.Duration) error
 }
 
 // Agent is one herdr-managed agent pane, flattened from `herdr agent list`.
@@ -129,21 +122,6 @@ func parseAgentList(out []byte) ([]Agent, error) {
 		})
 	}
 	return agents, nil
-}
-
-// ReportContext shells out to `herdr pane report-metadata`. The --source id
-// scopes the token to this plugin, and --ttl-ms lets a dead reporter's gauges
-// expire off the sidebar instead of going stale.
-func (r *realRunner) ReportContext(paneID, value string, ttl time.Duration) error {
-	out, err := exec.Command(r.herdrBin, "pane", "report-metadata", paneID,
-		"--source", metadataSource,
-		"--token", "context="+value,
-		"--ttl-ms", strconv.Itoa(int(ttl/time.Millisecond)),
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("herdr pane report-metadata %s: %w: %s", paneID, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 // PlanUsage shells out to `capataz usage`. capataz is optional for this view —
