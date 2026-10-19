@@ -5,9 +5,9 @@
 //   - A root is a directory whose *.tf declare a backend "<type>" block or a
 //     cloud block. Comments are stripped before matching.
 //   - Only local module sources ("./" or "../") form edges. Any other source
-//     (registry, git, http, or a local path escaping the repo) marks the map as
-//     having unknown scope, and RootsFor then reports unknown for any
-//     Terraform-relevant change. This is deliberately conservative.
+//     (registry, git, http, or a local path escaping the repo) is recorded in
+//     Map.RemoteSources for information only; it never makes a change unknown,
+//     since that code is not in the repo.
 //   - Modules are matched by directory only; nested directories are not
 //     implicitly part of a module. A .tf in a directory that is neither a root
 //     nor a called module is unknown.
@@ -155,11 +155,11 @@ func (m *Map) rootsOf(dir string) []string {
 
 // RootsFor maps repo-relative changed files to affected roots. unknown is true
 // when the change cannot be confidently scoped: a .tf file outside any root or
-// known module, a module no root uses, or any remote module source in the repo
-// (when a Terraform-relevant file changed).
+// known module, or a module no root uses. Remote module sources (and local
+// paths outside the repo) never make a change unknown: their code is not in
+// the repo, and switching module or version edits a .tf that maps to its root.
 func (m *Map) RootsFor(changedFiles []string) (roots []string, unknown bool) {
 	set := map[string]bool{}
-	relevant := false
 	for _, f := range changedFiles {
 		f = path.Clean(filepath.ToSlash(f))
 		base := path.Base(f)
@@ -167,7 +167,6 @@ func (m *Map) RootsFor(changedFiles []string) (roots []string, unknown bool) {
 		if !isTF && !strings.HasSuffix(base, ".tfvars") && base != ".terraform.lock.hcl" {
 			continue
 		}
-		relevant = true
 		dir := path.Dir(f)
 		if !m.roots[dir] && len(m.callers[dir]) == 0 {
 			if isTF || m.tfDirs[dir] {
@@ -182,9 +181,6 @@ func (m *Map) RootsFor(changedFiles []string) (roots []string, unknown bool) {
 		for _, r := range rs {
 			set[r] = true
 		}
-	}
-	if relevant && len(m.RemoteSources) > 0 {
-		unknown = true
 	}
 	for r := range set {
 		roots = append(roots, r)
