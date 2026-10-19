@@ -1,6 +1,7 @@
 package drain
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -273,6 +274,67 @@ func TestDispatchOne_EmptyBranchFailsNoMerge(t *testing.T) {
 	}
 	if n := countCalls(runner.calls, "DeleteBranch"); n != 1 {
 		t.Errorf("DeleteBranch (cleanup) calls: got %d, want 1", n)
+	}
+}
+
+// zeroCommitCase runs dispatchOne for an agent that finished with no commits
+// and returns the result, the fake, and the log.
+func zeroCommitCase(t *testing.T, dirty bool, status string) (IssueResult, *fakeRunner, string) {
+	t.Helper()
+	const branch = "capataz/f-01-a"
+	const path = "/repo/.scratch/f/issues/01-a.md"
+	runner := &fakeRunner{
+		commitsAhead:   map[string]int{branch: 0},
+		dirtyWorktrees: map[string]bool{"/fake/worktrees/" + branch: dirty},
+		issueStatus:    map[string]string{path: status},
+	}
+	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
+	iss := WaveIssue{Number: "01", Path: path, Feature: "f", Status: "ready-for-agent", Branch: branch}
+	var log strings.Builder
+	res := dispatchOne(cfg, runner, iss, func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) }, &sync.Mutex{})
+	return res, runner, log.String()
+}
+
+func assertKept(t *testing.T, res IssueResult, r *fakeRunner) {
+	t.Helper()
+	if res.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", res.Status)
+	}
+	for _, op := range []string{"WorktreeRemove", "DeleteBranch", "Merge"} {
+		if n := countCalls(r.calls, op); n != 0 {
+			t.Errorf("%s calls = %d, want 0", op, n)
+		}
+	}
+}
+
+func TestDispatchOne_ZeroCommitsDirtyWorktreeKept(t *testing.T) {
+	res, r, log := zeroCommitCase(t, true, "claimed")
+	assertKept(t, res, r)
+	if !strings.Contains(log, "/fake/worktrees/capataz/f-01-a") {
+		t.Errorf("log should name the worktree path; got:\n%s", log)
+	}
+}
+
+func TestDispatchOne_ZeroCommitsNeedsInfoKept(t *testing.T) {
+	for _, st := range []string{"needs-info", "ready-for-human"} {
+		res, r, log := zeroCommitCase(t, false, st)
+		assertKept(t, res, r)
+		if !strings.Contains(log, "needs an answer") {
+			t.Errorf("%s: log should say it needs an answer; got:\n%s", st, log)
+		}
+	}
+}
+
+func TestDispatchOne_ZeroCommitsCleanClaimedCleansUp(t *testing.T) {
+	res, r, _ := zeroCommitCase(t, false, "claimed")
+	if res.Status != "error" {
+		t.Errorf("status = %q, want error", res.Status)
+	}
+	if n := countCalls(r.calls, "WorktreeRemove"); n != 1 {
+		t.Errorf("WorktreeRemove calls = %d, want 1", n)
+	}
+	if n := countCalls(r.calls, "DeleteBranch"); n != 1 {
+		t.Errorf("DeleteBranch calls = %d, want 1", n)
 	}
 }
 

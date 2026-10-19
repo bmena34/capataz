@@ -34,6 +34,12 @@ type fakeRunner struct {
 	// reported done but the merge is still conflicted).
 	mergeUnresolved bool
 
+	// dirtyWorktrees maps worktree path -> WorktreeDirty result (absent = clean).
+	dirtyWorktrees map[string]bool
+
+	// issueStatus maps issue path -> IssueStatus result (absent = "claimed").
+	issueStatus map[string]string
+
 	mu    sync.Mutex
 	calls []fakeCall
 }
@@ -78,6 +84,19 @@ func (f *fakeRunner) WorktreeCreate(branch, cwd string) (string, string, error) 
 func (f *fakeRunner) TrustDir(path string) error {
 	f.record("TrustDir", path)
 	return nil
+}
+
+func (f *fakeRunner) WorktreeDirty(path string) (bool, error) {
+	f.record("WorktreeDirty", path)
+	return f.dirtyWorktrees[path], nil
+}
+
+func (f *fakeRunner) IssueStatus(repo, path string) (string, error) {
+	f.record("IssueStatus", repo, path)
+	if s, ok := f.issueStatus[path]; ok {
+		return s, nil
+	}
+	return "claimed", nil
 }
 
 func (f *fakeRunner) DeleteBranch(repo, branch string) error {

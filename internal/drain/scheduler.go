@@ -2,7 +2,10 @@ package drain
 
 import (
 	"fmt"
+	"strings"
 	"sync"
+
+	"github.com/bmena34/capataz/internal/issues"
 )
 
 // Drain runs the hands-off drain loop for cfg.Feature until no dispatchable
@@ -176,6 +179,33 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		return fail(status, err)
 	}
 
+	// After the agent has run, the worktree may hold work that exists nowhere
+	// else (uncommitted edits, or a needs-info question). failSafe never tears
+	// that down: it returns a blocked result and keeps worktree + branch. Only a
+	// clean worktree on a still-unanswered issue falls through to failClean.
+	failSafe := func(status string, cause error) IssueResult {
+		dirty, derr := runner.WorktreeDirty(checkoutPath)
+		if derr != nil {
+			logf("drain: [%s] cannot inspect worktree %s (%v) — keeping it", iss.Number, checkoutPath, derr)
+			return fail("error", fmt.Errorf("%w (worktree %s kept: dirty check failed: %v)", cause, checkoutPath, derr))
+		}
+		st, serr := runner.IssueStatus(cfg.RepoPath, iss.Path)
+		if serr != nil {
+			logf("drain: [%s] cannot read issue status (%v) — keeping worktree %s", iss.Number, serr, checkoutPath)
+			return fail("error", fmt.Errorf("%w (worktree %s kept: status read failed: %v)", cause, checkoutPath, serr))
+		}
+		st = strings.ToLower(strings.TrimSpace(st))
+		switch {
+		case st == issues.StatusNeedsInfo || st == issues.StatusReadyForHuman:
+			logf("drain: [%s] issue is %s — it needs an answer; keeping worktree %s and branch %s", iss.Number, st, checkoutPath, iss.Branch)
+			return fail("blocked", fmt.Errorf("issue is %s and needs an answer; worktree kept at %s", st, checkoutPath))
+		case dirty:
+			logf("drain: [%s] worktree %s has uncommitted or untracked changes — keeping it and branch %s", iss.Number, checkoutPath, iss.Branch)
+			return fail("blocked", fmt.Errorf("worktree has uncommitted changes (%v); kept at %s", cause, checkoutPath))
+		}
+		return failClean(status, cause)
+	}
+
 	// Step b: pre-seed Claude folder-trust for the fresh worktree dir, else the
 	// agent hangs at the "trust this folder?" prompt (which
 	// --dangerously-skip-permissions does not bypass) and does no work.
@@ -196,7 +226,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
 	prompt := workPrompt(iss)
 	if err := startAgentWithTask(runner, agentName, paneID, prompt, cfg.SkipPermissions, iss.Number, logf); err != nil {
-		return failClean("error", err)
+		return failSafe("error", err)
 	}
 
 	// Step d: wait for the agent on the unfocused pane. blocked/timeout are
@@ -204,7 +234,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	logf("drain: [%s] waiting for agent %s (timeout=%dms)", iss.Number, agentName, cfg.AgentTimeoutMS)
 	status, err := runner.AgentWait(agentName, cfg.AgentTimeoutMS)
 	if err != nil {
-		return failClean("error", fmt.Errorf("agent wait: %w", err))
+		return failSafe("error", fmt.Errorf("agent wait: %w", err))
 	}
 	if status != "done" {
 		return fail(status, nil) // leave the worktree for the operator to inspect
@@ -217,10 +247,10 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// treat zero commits as a failed issue — clean up, don't merge.
 	ahead, err := runner.CommitsAhead(cfg.RepoPath, iss.Branch)
 	if err != nil {
-		return failClean("error", fmt.Errorf("verify commits on %s: %w", iss.Branch, err))
+		return failSafe("error", fmt.Errorf("verify commits on %s: %w", iss.Branch, err))
 	}
 	if ahead == 0 {
-		return failClean("error", fmt.Errorf("agent produced no commits on %s — capataz-work did not implement the issue", iss.Branch))
+		return failSafe("error", fmt.Errorf("agent produced no commits on %s — capataz-work did not implement the issue", iss.Branch))
 	}
 	logf("drain: [%s] verified %d commit(s) on %s", iss.Number, ahead, iss.Branch)
 
