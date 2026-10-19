@@ -7,7 +7,7 @@ description: Resolve a merge that capataz left in a conflicted state after mergi
 
 You are a **fresh context**, deliberately started with no memory of how either side of this merge was written — so you can judge the right resolution from the code itself rather than inheriting either side's assumptions.
 
-capataz runs parallel issues in isolated git worktrees, each on a branch named `capataz/<feature>-<NN>-<slug>`. After each issue, `capataz drain` merges its branch into the base in the **primary checkout**. A clean merge just lands; a **conflicting** merge is left in its conflicted state, and the drain starts you (a fresh agent in the primary checkout) to resolve it.
+capataz runs parallel issues in isolated git worktrees, each on its own branch. After each issue, `capataz drain` merges its branch into the base in the **primary checkout**. A clean merge just lands; a **conflicting** merge is left in its conflicted state, and the drain starts you (a fresh agent in the primary checkout) to resolve it.
 
 The dispatch prompt names the branch:
 
@@ -24,7 +24,7 @@ git diff     # the conflict hunks
 
 Understand **both** sides of every conflict — the base's version (what already landed) and the incoming branch's version — and what each was trying to achieve. Don't read the hunks in isolation; read the surrounding code so you know the intent behind each side.
 
-The incoming branch `<BRANCH>` corresponds to an issue in `.scratch/`: the branch name (`capataz/<feature>-<NN>-<slug>`) and its commit message (which references `<feature>/NN`) point you at the issue file. Read that issue so you know what the incoming change was for.
+The incoming branch `<BRANCH>` corresponds to an issue in `.scratch/`: the branch name (which carries `<feature>-<NN>-<slug>`) and its commit message (which references `<feature>/NN`) point you at the issue file. Read that issue so you know what the incoming change was for.
 
 ### 2. Resolve each conflict
 

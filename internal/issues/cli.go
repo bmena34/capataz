@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bmena34/capataz/internal/config"
 	"github.com/bmena34/capataz/internal/worktree"
 )
 
@@ -76,7 +77,7 @@ func Run(args []string) error {
 		if !hasFlag(args[2:], "--json") {
 			return fmt.Errorf("waves: --json flag is required")
 		}
-		return wavesJSON(args[1])
+		return wavesJSON(args[1], args[2:])
 	default:
 		return usageErr()
 	}
@@ -384,12 +385,24 @@ type wavesOutput struct {
 // excluded even though they share the "todo" bucket: `capataz issue claim`
 // only succeeds from ready-for-agent, so emitting them would make a drain spin
 // on issues it can never claim. The --json flag is required by the caller.
-func wavesJSON(feature string) error {
+//
+// The branch prefix resolves flag (--branch-prefix) > CAPATAZ_BRANCH_PREFIX env
+// (how `capataz drain --branch-prefix` hands its flag down) > per-repo config >
+// global config > empty.
+func wavesJSON(feature string, args []string) error {
 	// Resolve the repo root by walking up from cwd to find the .scratch/ parent.
 	// We do it by using the primary checkout of the cwd, falling back to ".".
 	repo := "."
 	if p, err := worktree.PrimaryCheckout("."); err == nil {
 		repo = p
+	}
+
+	prefix := config.Load().DrainFor(repo).BranchPrefix
+	if v, ok := os.LookupEnv("CAPATAZ_BRANCH_PREFIX"); ok {
+		prefix = v
+	}
+	if v, ok := lookupFlag(args, "--branch-prefix"); ok {
+		prefix = v
 	}
 
 	feats, err := Scan(repo)
@@ -429,7 +442,7 @@ func wavesJSON(feature string) error {
 				Path:    iss.Path,
 				Feature: iss.Feature,
 				Status:  iss.Status,
-				Branch:  DispatchBranch(iss),
+				Branch:  DispatchBranch(iss, prefix),
 			})
 		}
 		out.Waves = append(out.Waves, w)
@@ -441,6 +454,20 @@ func wavesJSON(feature string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+// lookupFlag is flagValue that also reports whether the flag was present, so an
+// explicit empty value (--branch-prefix "") can override config.
+func lookupFlag(args []string, name string) (string, bool) {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1], true
+		}
+		if strings.HasPrefix(a, name+"=") {
+			return strings.TrimPrefix(a, name+"="), true
+		}
+	}
+	return "", false
 }
 
 // flagValue returns the value following name in args (e.g. --answer "text"), or

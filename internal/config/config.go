@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 
 	"github.com/bmena34/capataz/internal/paths"
 )
@@ -13,6 +14,71 @@ import (
 type Config struct {
 	Usage   Usage   `json:"usage"`
 	Context Context `json:"context"`
+	Drain   Drain   `json:"drain"`
+}
+
+// DefaultPRCap is the PR cap used when neither the global nor a per-repo drain
+// section sets one.
+const DefaultPRCap = 3
+
+// Drain holds `capataz drain` settings: global values plus optional per-repo
+// overrides keyed by absolute repo root.
+type Drain struct {
+	// BranchPrefix is prepended to dispatched branch names. Empty by default,
+	// so branches look like <feature>-NN-slug.
+	BranchPrefix string `json:"branch_prefix"`
+	// Verify is the test command run to verify a dispatched branch ("" = none).
+	Verify string `json:"verify"`
+	// PRCap is the max open PRs the drain keeps in flight (0 = default 3).
+	PRCap int `json:"pr_cap"`
+	// Repos maps an absolute repo root to overrides for that repo.
+	Repos map[string]DrainRepo `json:"repos"`
+}
+
+// DrainRepo is a per-repo override. Pointer fields distinguish "unset" (inherit
+// the global value) from an explicit empty/zero value.
+type DrainRepo struct {
+	BranchPrefix *string `json:"branch_prefix"`
+	Verify       *string `json:"verify"`
+	PRCap        *int    `json:"pr_cap"`
+}
+
+// DrainSettings is the effective drain configuration for one repo.
+type DrainSettings struct {
+	BranchPrefix string
+	Verify       string
+	PRCap        int
+}
+
+// DrainFor resolves the effective drain settings for repoRoot: a per-repo entry
+// overrides the global value field by field; pr_cap defaults to DefaultPRCap.
+func (c Config) DrainFor(repoRoot string) DrainSettings {
+	s := DrainSettings{BranchPrefix: c.Drain.BranchPrefix, Verify: c.Drain.Verify, PRCap: c.Drain.PRCap}
+	if r, ok := c.Drain.Repos[filepath.Clean(repoRoot)]; ok {
+		if r.BranchPrefix != nil {
+			s.BranchPrefix = *r.BranchPrefix
+		}
+		if r.Verify != nil {
+			s.Verify = *r.Verify
+		}
+		if r.PRCap != nil {
+			s.PRCap = *r.PRCap
+		}
+	} else if r, ok := c.Drain.Repos[repoRoot]; ok {
+		if r.BranchPrefix != nil {
+			s.BranchPrefix = *r.BranchPrefix
+		}
+		if r.Verify != nil {
+			s.Verify = *r.Verify
+		}
+		if r.PRCap != nil {
+			s.PRCap = *r.PRCap
+		}
+	}
+	if s.PRCap <= 0 {
+		s.PRCap = DefaultPRCap
+	}
+	return s
 }
 
 // Context tunes the context-window gauge. The transcript records only the bare
@@ -42,6 +108,7 @@ type Usage struct {
 // Default returns the built-in configuration.
 func Default() Config {
 	return Config{
+		Drain: Drain{PRCap: DefaultPRCap},
 		Usage: Usage{
 			Enabled:         true,
 			URL:             "https://api.anthropic.com/api/oauth/usage",

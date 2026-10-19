@@ -16,6 +16,7 @@
 //	-timeout      int    per-agent wait timeout in milliseconds (default 3600000)
 //	-skip-perms         pass --dangerously-skip-permissions to dispatched agents
 //	-repo         string repo path for worktree creation (default: cwd)
+//	-branch-prefix string  branch name prefix (overrides config drain.branch_prefix)
 //	-dry-run            print plan without creating worktrees or starting agents
 //
 // Environment:
@@ -39,6 +40,7 @@ func Run(args []string) error {
 	timeoutMS := fs.Int("timeout", 3_600_000, "per-agent wait timeout in milliseconds")
 	skipPerms := fs.Bool("skip-perms", false, "pass --dangerously-skip-permissions to dispatched agents")
 	repoPath := fs.String("repo", "", "repo path for worktree creation (default: current directory)")
+	branchPrefix := fs.String("branch-prefix", "", "dispatch branch prefix (default: drain.branch_prefix from config, else empty)")
 	dryRun := fs.Bool("dry-run", false, "print planned dispatch without creating worktrees or starting agents")
 
 	fs.Usage = func() {
@@ -59,6 +61,14 @@ func Run(args []string) error {
 		return fmt.Errorf("feature argument required")
 	}
 	feature := fs.Arg(0)
+
+	// `capataz issue waves` (spawned by the runner) reads the prefix from this
+	// env var, so the flag wins over config without widening the Runner API.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "branch-prefix" {
+			os.Setenv("CAPATAZ_BRANCH_PREFIX", *branchPrefix)
+		}
+	})
 
 	// Resolve repo path: flag takes precedence, then cwd.
 	repo := *repoPath
