@@ -255,7 +255,8 @@ func TestDispatchOne_EmptyBranchFailsNoMerge(t *testing.T) {
 	const branch = "capataz/f-01-a"
 	runner := &fakeRunner{
 		agentWaitStatus: map[string]string{"drain-f-01": "done"},
-		commitsAhead:    map[string]int{branch: 0}, // agent committed nothing
+		commitsAhead:    map[string]int{branch: 0},                                               // agent committed nothing
+		issueStatus:     map[string]string{"/repo/.scratch/f/issues/01-a.md": "ready-for-agent"}, // never claimed
 	}
 	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
 	iss := WaveIssue{Number: "01", Path: "/repo/.scratch/f/issues/01-a.md", Feature: "f", Status: "ready-for-agent", Branch: branch}
@@ -325,8 +326,19 @@ func TestDispatchOne_ZeroCommitsNeedsInfoKept(t *testing.T) {
 	}
 }
 
-func TestDispatchOne_ZeroCommitsCleanClaimedCleansUp(t *testing.T) {
-	res, r, _ := zeroCommitCase(t, false, "claimed")
+func TestDispatchOne_ZeroCommitsCleanClaimedKept(t *testing.T) {
+	res, r, log := zeroCommitCase(t, false, "claimed")
+	assertKept(t, res, r)
+	if n := countCalls(r.calls, "Notify"); n != 1 {
+		t.Errorf("Notify calls = %d, want 1", n)
+	}
+	if !strings.Contains(log, "asked in chat") || !strings.Contains(log, "p-fake-") {
+		t.Errorf("log should say it may have asked in chat and name the pane; got:\n%s", log)
+	}
+}
+
+func TestDispatchOne_ZeroCommitsCleanUnclaimedCleansUp(t *testing.T) {
+	res, r, _ := zeroCommitCase(t, false, "ready-for-agent")
 	if res.Status != "error" {
 		t.Errorf("status = %q, want error", res.Status)
 	}
@@ -335,6 +347,9 @@ func TestDispatchOne_ZeroCommitsCleanClaimedCleansUp(t *testing.T) {
 	}
 	if n := countCalls(r.calls, "DeleteBranch"); n != 1 {
 		t.Errorf("DeleteBranch calls = %d, want 1", n)
+	}
+	if n := countCalls(r.calls, "Notify"); n != 0 {
+		t.Errorf("Notify calls = %d, want 0", n)
 	}
 }
 
