@@ -16,7 +16,7 @@ type Config struct {
 
 	// SkipPermissions controls whether dispatched agents run with
 	// --dangerously-skip-permissions. Default false: permission prompts surface
-	// as herdr "blocked" and the loop surfaces them for operator attention.
+	// as herdr "blocked"; the drain notifies the operator and waits them out.
 	SkipPermissions bool
 
 	// AgentTimeoutMS is the per-agent wait timeout in milliseconds.
