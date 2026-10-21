@@ -4,7 +4,7 @@ Guidance for working on **capataz** with Claude Code. User-facing docs are in `R
 
 ## What it is
 
-The workflow layer for Claude Code agents running under **herdr**: a per-repo `.scratch` markdown backlog, parallel-safe dispatch waves, a drain orchestrator, and the shipped skills. Pure Go, one binary with subcommands. The repo root is also the **herdr plugin** (`herdr-plugin.toml`): its panes and actions all run `./bin/capataz`. herdr owns panes, worktrees, agent state and persistence; capataz has no daemon, no hooks, no database. (The old tmux dashboard is gone; the tag `tmux-final` is its last version.)
+The workflow layer for Claude Code agents running under **herdr**: a per-repo `.scratch` markdown backlog, parallel-safe dispatch waves, a drain orchestrator, and the shipped skills. Pure Go, one binary with subcommands. The repo root is also the **herdr plugin** (`herdr-plugin.toml`): its panes, actions and startup hook all run `./bin/capataz`. herdr owns panes, worktrees, agent state and persistence; capataz has no daemon, no hooks, no database. (The old tmux dashboard is gone; the tag `tmux-final` is its last version.)
 
 ## Build / test / run
 
@@ -15,7 +15,7 @@ make vet / make test    # go vet ./... / go test ./...
 sh scripts/build.sh     # build ./bin/capataz — the binary the herdr plugin runs
 ```
 
-**Dev loop:** CLI changes → `make build`. Plugin changes → `sh scripts/build.sh` (popups re-exec the binary on every open). Manifest changes → `herdr server reload-config`. Skill/agent changes → rebuild (they're `//go:embed`ed) **and** `capataz install` to re-copy into `~/.claude`.
+**Dev loop:** CLI changes → `make build`. Plugin changes → `sh scripts/build.sh` (popups re-exec the binary on every open; the context reporter is long-lived — kill it via its pidfile in `~/.local/state/capataz/` and rerun `bin/context-reporter.sh`). Manifest changes → `herdr server reload-config`. Skill/agent changes → rebuild (they're `//go:embed`ed) **and** `capataz install` to re-copy into `~/.claude`.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ sh scripts/build.sh     # build ./bin/capataz — the binary the herdr plugin ru
 
 - **`internal/issues`** — the backlog. `Scan(repoRoot)` parses `.scratch/<feature>/issues/NN-slug.md` (`Status:`/`Type:`/`Blocked by:`/`Touches:` headers); `SetStatus` rewrites the `Status:` line; `Bucket` collapses status to todo/doing/blocked/done; `ParallelSafe` derives waves of ready issues with pairwise-disjoint `Touches` and no blocking edge (`PathsOverlap` compares path-segment prefixes; empty `Touches` ⇒ overlaps everything); `DispatchBranch` names worktree branches `capataz/<feature>-NN-slug`. Also hosts the `capataz issue` CLI (`Run`: claim/resolve/status/comment/list/new/waves). Files are the source of truth.
 - **`internal/drain`** — `capataz drain`: loops `capataz issue waves --json` → for each issue in a wave, `herdr worktree create` → `capataz trust-dir` → start a Claude agent with `workPrompt` → `herdr agent wait` → verify the branch has commits → merge back (serialized by `mergeMu`; a conflict starts a `capataz-fix-conflict` agent in the base repo) → re-scan. All external calls go through the `Runner` interface, so tests use a fake.
-- **`internal/usageview`** — `capataz usage-view`: the plan gauge (shells out to `capataz usage`) plus per-pane context gauges read straight from Claude Code transcripts, located by the session id in `herdr agent list`.
+- **`internal/usageview`** — `capataz usage-view`: the plan gauge (shells out to `capataz usage`) plus per-pane context gauges read straight from Claude Code transcripts, located by the session id in `herdr agent list`. `-report` is the headless mode behind the sidebar `$context` token (`herdr pane report-metadata`, TTL = 3× interval).
 - **`internal/issueview`** — `capataz issues`: read-only Bubble Tea backlog viewer for the backlog popup.
 - **`internal/worktree`** — `PrimaryCheckout(dir)`: the main working tree for any path inside a repo or linked worktree. The backlog always lives in the primary checkout.
 - **`internal/install`** — copies the embedded skills (`skills/`) and agent defs (`agents/`) into `~/.claude`, writes the default config, adds `.scratch/` to the global git excludes (`gitignore.go`), and removes tmux-era leftovers (capataz hooks in `settings.json`, the `dev.capataz` launchd plist).
