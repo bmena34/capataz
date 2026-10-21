@@ -43,9 +43,9 @@ type Runner interface {
 	WorktreeDirty(path string) (bool, error)
 
 	// IssueStatus returns the issue file's current Status: (lowercased), read
-	// from the backlog under repo. The drain uses it to tell "agent stopped to
+	// straight from the file at path. The drain uses it to tell "agent stopped to
 	// ask a question" (asking, needs-info, ready-for-human) from "agent did nothing".
-	IssueStatus(repo, path string) (string, error)
+	IssueStatus(path string) (string, error)
 
 	// IssueQuestion / IssueAnswer return the latest agent question / operator
 	// answer recorded on the issue file (capataz issue ask / answer), or "".
@@ -204,19 +204,8 @@ func (r *realRunner) WorktreeDirty(path string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func (r *realRunner) IssueStatus(repo, path string) (string, error) {
-	feats, err := issues.Scan(repo)
-	if err != nil {
-		return "", fmt.Errorf("scan backlog %s: %w", repo, err)
-	}
-	for _, f := range feats {
-		for _, is := range f.Issues {
-			if is.Path == path {
-				return is.Status, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("issue %s not found in backlog %s", path, repo)
+func (r *realRunner) IssueStatus(path string) (string, error) {
+	return issues.ReadStatus(path)
 }
 
 func (r *realRunner) IssueQuestion(path string) (string, error) {

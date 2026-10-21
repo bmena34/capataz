@@ -209,7 +209,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 			logf("drain: [%s] cannot inspect worktree %s (%v) — keeping it", iss.Number, checkoutPath, derr)
 			return fail("error", fmt.Errorf("%w (worktree %s kept: dirty check failed: %v)", cause, checkoutPath, derr))
 		}
-		st, serr := runner.IssueStatus(cfg.RepoPath, iss.Path)
+		st, serr := runner.IssueStatus(iss.Path)
 		if serr != nil {
 			logf("drain: [%s] cannot read issue status (%v) — keeping worktree %s", iss.Number, serr, checkoutPath)
 			return fail("error", fmt.Errorf("%w (worktree %s kept: status read failed: %v)", cause, checkoutPath, serr))
@@ -417,7 +417,7 @@ type askFailure struct {
 // answer. delivered=false means the issue was not asking — carry on to commit
 // verification. Any other status the issue moves to ends the dispatch.
 func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, logf func(string, ...any)) (delivered bool, fail *askFailure) {
-	st, err := runner.IssueStatus(cfg.RepoPath, iss.Path)
+	st, err := runner.IssueStatus(iss.Path)
 	if err != nil {
 		logf("drain: [%s] cannot read issue status (%v) — assuming it is not asking", iss.Number, err)
 		return false, nil
@@ -439,7 +439,7 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, log
 
 	for normStatus(st) == issues.StatusAsking {
 		cfg.sleep(cfg.askPoll)
-		if st, err = runner.IssueStatus(cfg.RepoPath, iss.Path); err != nil {
+		if st, err = runner.IssueStatus(iss.Path); err != nil {
 			logf("drain: [%s] cannot read issue status (%v) — still waiting", iss.Number, err)
 			st = issues.StatusAsking
 		}

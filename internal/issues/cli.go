@@ -155,6 +155,16 @@ func readStatus(path string) string {
 	return parseIssue(path, "").Status
 }
 
+// ReadStatus is readStatus for callers that hold an issue's absolute path (the
+// drain): it reads the file directly rather than scanning a backlog root, and
+// errors only when the file can't be read.
+func ReadStatus(path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return readStatus(path), nil
+}
+
 // create writes a new ready-for-agent issue at .scratch/<feature>/issues/NN-slug.md,
 // numbered one past the highest existing issue in that feature. Used by the
 // capataz-review skill to file review findings back into the backlog.

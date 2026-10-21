@@ -102,7 +102,7 @@ func (w *stallWatch) check(logf func(string, ...any)) {
 	if w.alerted || now.Sub(w.since) < w.after {
 		return
 	}
-	if st, err := w.runner.IssueStatus(w.cfg.RepoPath, w.iss.Path); err == nil && normStatus(st) == issues.StatusAsking {
+	if st, err := w.runner.IssueStatus(w.iss.Path); err == nil && normStatus(st) == issues.StatusAsking {
 		w.since = now
 		return
 	}

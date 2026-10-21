@@ -40,3 +40,31 @@ func TestAgentWait_ErrorCodes(t *testing.T) {
 		})
 	}
 }
+
+// IssueStatus reads the file waves emitted directly, so a drain started with a
+// relative --repo or from a subdirectory still sees an `asking` worker.
+func TestIssueStatus_ReadsFileNotBacklogRoot(t *testing.T) {
+	repo := t.TempDir()
+	dir := filepath.Join(repo, ".scratch", "feat", "issues")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "01-x.md")
+	if err := os.WriteFile(path, []byte("# X\n\nStatus: Asking\n\n## Comments\nStatus: resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(repo, "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub) // the drain's cwd/RepoPath no longer matches the backlog root
+
+	r := &realRunner{}
+	st, err := r.IssueStatus(path)
+	if err != nil || st != "asking" {
+		t.Fatalf("IssueStatus = %q, %v; want asking", st, err)
+	}
+	if _, err := r.IssueStatus(filepath.Join(dir, "02-missing.md")); err == nil {
+		t.Fatal("IssueStatus on a missing file: want error")
+	}
+}
