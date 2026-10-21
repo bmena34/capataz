@@ -652,7 +652,12 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 	fmt.Fprintf(cfg.Out, "concurrency cap : %d (0 = unlimited)\n", cfg.Concurrency)
 	fmt.Fprintf(cfg.Out, "skip_permissions: %v\n", cfg.SkipPermissions)
 	fmt.Fprintf(cfg.Out, "agent timeout   : %dms\n", cfg.AgentTimeoutMS)
-	fmt.Fprintf(cfg.Out, "repo path       : %s\n\n", cfg.RepoPath)
+	fmt.Fprintf(cfg.Out, "repo path       : %s\n", cfg.RepoPath)
+	grace := cfg.ResumeGraceMS
+	if grace <= 0 {
+		grace = defaultResumeGraceMS
+	}
+	fmt.Fprintf(cfg.Out, "resume grace    : %dms\n\n", grace)
 	fmt.Fprintf(cfg.Out, "Would dispatch %d issue(s):\n\n", len(batch))
 	for i, iss := range batch {
 		agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
@@ -670,11 +675,15 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 			agentName, posture)
 		fmt.Fprintf(cfg.Out, "      cmd[4] : herdr agent prompt %s %q\n", agentName, prompt)
 		fmt.Fprintf(cfg.Out, "               (capataz-work claims → implements → commits → resolves)\n")
-		fmt.Fprintf(cfg.Out, "      cmd[5] : herdr agent wait %s --until done --until blocked --timeout %d\n",
+		fmt.Fprintf(cfg.Out, "      cmd[5] : herdr agent wait %s --until done --until idle --until blocked --timeout %d\n",
 			agentName, cfg.AgentTimeoutMS)
 		fmt.Fprintf(cfg.Out, "               (blocked → herdr notification show; wait --until working|done|idle, then wait again)\n")
 		fmt.Fprintf(cfg.Out, "               (issue asking → herdr notification show; wait for\n")
-		fmt.Fprintf(cfg.Out, "                capataz issue answer %s \"…\", then prompt the answer and wait again)\n", iss.Path)
+		fmt.Fprintf(cfg.Out, "                capataz issue answer %s \"…\", then prompt the answer,\n", iss.Path)
+		fmt.Fprintf(cfg.Out, "                confirm via herdr agent list that it started a new turn, and wait again)\n")
+		fmt.Fprintf(cfg.Out, "               (still claimed with no commits or a dirty worktree →\n")
+		fmt.Fprintf(cfg.Out, "                herdr agent wait %s --until working --until blocked --timeout %d; resumed → wait again)\n",
+			agentName, grace)
 		fmt.Fprintf(cfg.Out, "      cmd[6] : git -C %s rev-list --count HEAD..%s   (verify >= 1 commit)\n",
 			cfg.RepoPath, iss.Branch)
 		fmt.Fprintf(cfg.Out, "      cmd[7] : git -C %s merge --no-ff %s\n", cfg.RepoPath, iss.Branch)
