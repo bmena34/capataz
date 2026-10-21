@@ -523,21 +523,17 @@ func Dispatchable(iss Issue) bool {
 	return Bucket(iss) == BucketTodo
 }
 
-// BranchPrefix is the prefix capataz puts on every dispatched worktree branch:
-// dispatch cuts `capataz/<feature>-<NN>-<slug>`, so Round 2's merge-back scans
-// only branches carrying it.
-const BranchPrefix = "capataz/"
-
 // DispatchBranch returns the worktree branch name for an issue —
-// `capataz/<feature>-<NN>-<slug>`, using "--" for an unnumbered issue. It is the
-// single source of truth for the dispatch branch shape so dispatch (Round 1) and
-// merge-back matching (Round 2) can't drift apart.
-func DispatchBranch(iss Issue) string {
+// `<prefix><feature>-<NN>-<slug>`, using "--" for an unnumbered issue. The
+// prefix is configurable (drain.branch_prefix) and empty by default. Nothing
+// should identify dispatch branches by prefix; the drain carries the exact
+// branch from `capataz issue waves --json`.
+func DispatchBranch(iss Issue, prefix string) string {
 	num := iss.Num
 	if num == "" {
 		num = "--"
 	}
-	return BranchPrefix + iss.Feature + "-" + num + "-" + iss.Slug
+	return prefix + iss.Feature + "-" + num + "-" + iss.Slug
 }
 
 // slugToTitle turns "add-login-form" into "Add login form".

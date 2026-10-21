@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bmena34/capataz/internal/issues"
 )
 
 // Runner is the interface behind all capataz and herdr shell-outs.
@@ -34,6 +36,16 @@ type Runner interface {
 
 	// TrustDir pre-seeds Claude folder-trust for a worktree dir (capataz trust-dir).
 	TrustDir(path string) error
+
+	// WorktreeDirty reports whether the worktree at path has uncommitted or
+	// untracked changes (git status --porcelain non-empty). The drain checks it
+	// before any cleanup so unlanded work is never deleted.
+	WorktreeDirty(path string) (bool, error)
+
+	// IssueStatus returns the issue file's current Status: (lowercased), read
+	// from the backlog under repo. The drain uses it to tell "agent stopped to
+	// ask a question" (needs-info / ready-for-human) from "agent did nothing".
+	IssueStatus(repo, path string) (string, error)
 
 	// DeleteBranch deletes <branch> in repo — cleanup after a failed dispatch.
 	DeleteBranch(repo, branch string) error
@@ -168,6 +180,29 @@ func (r *realRunner) TrustDir(path string) error {
 		return fmt.Errorf("capataz trust-dir %s: %w\n%s", path, err, out)
 	}
 	return nil
+}
+
+func (r *realRunner) WorktreeDirty(path string) (bool, error) {
+	out, err := exec.Command("git", "-C", path, "status", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git -C %s status --porcelain: %w", path, err)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func (r *realRunner) IssueStatus(repo, path string) (string, error) {
+	feats, err := issues.Scan(repo)
+	if err != nil {
+		return "", fmt.Errorf("scan backlog %s: %w", repo, err)
+	}
+	for _, f := range feats {
+		for _, is := range f.Issues {
+			if is.Path == path {
+				return is.Status, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("issue %s not found in backlog %s", path, repo)
 }
 
 // DeleteBranch deletes <branch> in repo (git -C repo branch -D). Used to clean

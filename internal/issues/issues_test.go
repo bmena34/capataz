@@ -676,11 +676,11 @@ func TestDispatchBranch(t *testing.T) {
 	}
 
 	// DispatchBranch is the branch shape dispatch cuts.
-	if got := DispatchBranch(list[0]); got != "capataz/login-01-form" {
-		t.Fatalf("DispatchBranch = %q, want %q", got, "capataz/login-01-form")
+	if got := DispatchBranch(list[0], ""); got != "login-01-form" {
+		t.Fatalf("DispatchBranch = %q, want %q", got, "login-01-form")
 	}
-	if got := DispatchBranch(list[2]); got != "capataz/billing----notes" {
-		t.Fatalf("DispatchBranch (unnumbered) = %q, want %q", got, "capataz/billing----notes")
+	if got := DispatchBranch(list[2], "bm/"); got != "bm/billing----notes" {
+		t.Fatalf("DispatchBranch (unnumbered) = %q, want %q", got, "bm/billing----notes")
 	}
 
 }

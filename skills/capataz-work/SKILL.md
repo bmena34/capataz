@@ -72,7 +72,7 @@ If your diff is more than a single small change — it touches multiple files, o
 
 ### 4c. Isolated-worktree mode (only if the dispatch says so)
 
-If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (`capataz drain` dispatches issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:
+If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (`capataz drain` dispatches issues this way, on the branch named in the dispatch prompt), two things change:
 
 - **Commit when you resolve.** Do your work as normal, but as part of resolving, commit it on that branch:
 
