@@ -87,9 +87,14 @@ type Runner interface {
 	// ClosePane closes a herdr pane (tears down a fix-conflict base workspace).
 	ClosePane(paneID string) error
 
-	// AgentWait runs `herdr agent wait <target> --until done --until blocked --timeout <ms>`.
+	// AgentWait runs `herdr agent wait <target> --until done --until idle --until blocked --timeout <ms>`.
 	// Returns the final status string ("done", "blocked", "timeout", or error text).
 	AgentWait(target string, timeoutMS int) (status string, err error)
+
+	// AgentUnblocked waits for a blocked agent to leave blocked:
+	// `herdr agent wait <target> --until working --until done --until idle --timeout <ms>`.
+	// Returns "working", "done", or "timeout".
+	AgentUnblocked(target string, timeoutMS int) (status string, err error)
 
 	// Merge runs `git -C <repo> merge --no-ff <branch>`.
 	// Returns (false, nil) on a clean merge. Returns (true, nil) when the merge
@@ -415,13 +420,21 @@ func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
 	// herdr reports "done" for an UNFOCUSED tab but "idle" for a focused one
 	// (same underlying finished state), so accept both — else a drain hangs
 	// whenever an operator clicks into the pane. "blocked" means it needs input.
-	args := []string{
-		"agent", "wait", target,
-		"--until", "done",
-		"--until", "idle",
-		"--until", "blocked",
-		"--timeout", fmt.Sprintf("%d", timeoutMS),
+	return r.agentWait(target, timeoutMS, "done", "idle", "blocked")
+}
+
+func (r *realRunner) AgentUnblocked(target string, timeoutMS int) (string, error) {
+	return r.agentWait(target, timeoutMS, "working", "done", "idle")
+}
+
+// agentWait runs `herdr agent wait <target> --until <s>... --timeout <ms>` and
+// returns the state it stopped on, with idle folded into done.
+func (r *realRunner) agentWait(target string, timeoutMS int, until ...string) (string, error) {
+	args := []string{"agent", "wait", target}
+	for _, u := range until {
+		args = append(args, "--until", u)
 	}
+	args = append(args, "--timeout", fmt.Sprintf("%d", timeoutMS))
 	out, err := exec.Command(r.herdrBin, args...).Output()
 	if err != nil {
 		// A timeout from herdr returns non-zero — treat it as "timeout" status

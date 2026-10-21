@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,66 +76,85 @@ func TestDrain_ConcurrencyCap(t *testing.T) {
 	}
 }
 
-func TestDrain_BlockedAgentNotResolved(t *testing.T) {
-	// One issue goes blocked — must NOT be resolved; loop re-scans and then drains.
-	wave := []byte(`{
-		"feature":"f",
-		"waves":[[
-			{"number":"01","path":"/repo/.scratch/f/issues/01-a.md","feature":"f","status":"ready-for-agent","branch":"b1"}
-		]]
-	}`)
-	agentName := "drain-f-01"
+func TestDrain_BlockedAgentIsWaitedOut(t *testing.T) {
+	// The agent blocks on a prompt, the operator approves it (working), and it
+	// finishes with commits: one notification, then the issue merges.
+	clock := &fakeClock{}
 	runner := &fakeRunner{
-		wavesResponses: [][]byte{wave, emptyWave("f")},
-		agentWaitStatus: map[string]string{
-			agentName: "blocked",
-		},
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		agentWaitSeq:   map[string][]string{"drain-f-01": {"blocked", "done"}},
+		unblockSeq:     map[string][]string{"drain-f-01": {"timeout", "working"}},
+		clock:          clock,
 	}
-	cfg := Config{
-		Feature:        "f",
-		Concurrency:    0,
-		AgentTimeoutMS: 5000,
-		RepoPath:       "/repo",
-		Out:            &strings.Builder{},
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
 	}
-	if err := Drain(cfg, runner); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	notes := callsOf(runner.calls, "Notify")
+	if len(notes) != 1 || !strings.Contains(notes[0].Args[0], "f 01 is waiting on a prompt") ||
+		!strings.Contains(notes[0].Args[1], "p-fake-ws-fake-b1") {
+		t.Errorf("Notify calls = %v, want one naming the issue and pane", notes)
 	}
-	if n := countCalls(runner.calls, "AgentStart"); n != 1 {
-		t.Errorf("AgentStart calls: got %d, want 1", n)
+	if n := countCalls(runner.calls, "AgentUnblocked"); n != 2 {
+		t.Errorf("AgentUnblocked calls: got %d, want 2", n)
 	}
-	// Merge must NOT be called when the agent is blocked (no verified work).
-	if n := countCalls(runner.calls, "Merge"); n != 0 {
-		t.Errorf("Merge calls: got %d, want 0 (blocked issue must not merge)", n)
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
+		t.Errorf("WorktreeRemove calls: got %d, want 1", n)
+	}
+}
+
+func TestDrain_BlockedTimeDoesNotConsumeTimeout(t *testing.T) {
+	// Each AgentWait burns 4s of a 10s budget; blocked spells take hours. Three
+	// waits fit in the budget only if blocked time is excluded.
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		agentWaitSeq:   map[string][]string{"drain-f-01": {"blocked", "blocked", "done"}},
+		clock:          clock,
+		waitElapsed:    4 * time.Second,
+		blockedElapsed: 5 * time.Hour,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	waits := callsOf(runner.calls, "AgentWait")
+	var got []string
+	for _, c := range waits {
+		got = append(got, c.Args[1])
+	}
+	if want := []string{"10000", "6000", "2000"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("AgentWait timeouts = %v, want %v", got, want)
+	}
+	if n := countCalls(runner.calls, "Notify"); n != 1 {
+		t.Errorf("Notify calls: got %d, want 1 (once per blocked dispatch)", n)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
 	}
 }
 
 func TestDrain_TimeoutAgentNotResolved(t *testing.T) {
-	agentName := "drain-f-01"
-	wave := []byte(`{
-		"feature":"f",
-		"waves":[[
-			{"number":"01","path":"/repo/.scratch/f/issues/01-a.md","feature":"f","status":"ready-for-agent","branch":"b1"}
-		]]
-	}`)
+	// A timeout notifies the operator, keeps the worktree, and does not merge.
 	runner := &fakeRunner{
-		wavesResponses: [][]byte{wave, emptyWave("f")},
-		agentWaitStatus: map[string]string{
-			agentName: "timeout",
-		},
+		wavesResponses:  [][]byte{oneIssueWave(), emptyWave("f")},
+		agentWaitStatus: map[string]string{"drain-f-01": "timeout"},
 	}
-	cfg := Config{
-		Feature:        "f",
-		Concurrency:    0,
-		AgentTimeoutMS: 5000,
-		RepoPath:       "/repo",
-		Out:            &strings.Builder{},
-	}
+	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
 	if err := Drain(cfg, runner); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if n := countCalls(runner.calls, "Merge"); n != 0 {
-		t.Errorf("Merge calls: got %d, want 0 (timed-out issue must not merge)", n)
+	notes := callsOf(runner.calls, "Notify")
+	if len(notes) != 1 || !strings.Contains(notes[0].Args[0], "f 01 timed out") {
+		t.Errorf("Notify calls = %v, want one timeout notification", notes)
+	}
+	for _, op := range []string{"Merge", "WorktreeRemove", "DeleteBranch"} {
+		if n := countCalls(runner.calls, op); n != 0 {
+			t.Errorf("%s calls: got %d, want 0 (timed-out worktree is kept)", op, n)
+		}
 	}
 }
 
@@ -235,7 +255,7 @@ func TestDrain_StopsOnRepeatedFailure(t *testing.T) {
 	wave := []byte(`{"feature":"f","waves":[[{"number":"01","path":"/repo/.scratch/f/issues/01-a.md","feature":"f","status":"ready-for-agent","branch":"b1"}]]}`)
 	runner := &fakeRunner{
 		wavesResponses:  [][]byte{wave}, // last entry repeats forever
-		agentWaitStatus: map[string]string{"drain-f-01": "blocked"},
+		agentWaitStatus: map[string]string{"drain-f-01": "timeout"},
 	}
 	cfg := Config{Feature: "f", Concurrency: 0, AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
 

@@ -189,16 +189,16 @@ func TestMergeBack_ConflictedMerge(t *testing.T) {
 	}
 }
 
-// TestMergeBack_ConflictFixBlocked verifies that when the fix-conflict agent
-// ends blocked, dispatchOne surfaces an error and does NOT call WorktreeRemove.
+// TestMergeBack_ConflictFixTimeout verifies that when the fix-conflict agent
+// times out, dispatchOne surfaces an error and does NOT call WorktreeRemove.
 // (The issue is already resolved; the conflicted merge is stuck in the base repo.)
-func TestMergeBack_ConflictFixBlocked(t *testing.T) {
+func TestMergeBack_ConflictFixTimeout(t *testing.T) {
 	const branch = "capataz/f-01-a"
 	fixName := "fix-conflict-f-01"
 	runner := &fakeRunner{
 		mergeConflicted: map[string]bool{branch: true},
 		agentWaitStatus: map[string]string{
-			fixName: "blocked", // fix-conflict agent blocks
+			fixName: "timeout", // fix-conflict agent times out
 		},
 	}
 	cfg := Config{
@@ -223,15 +223,39 @@ func TestMergeBack_ConflictFixBlocked(t *testing.T) {
 	}
 	result := dispatchOne(cfg, runner, iss, logf, &sync.Mutex{})
 
-	// Result must be "error" because fix-conflict blocked.
+	// Result must be "error" because fix-conflict timed out.
 	if result.Status != "error" {
 		t.Errorf("expected status=error, got %q", result.Status)
 	}
 	if result.Err == nil {
 		t.Error("expected non-nil error, got nil")
 	}
-	// WorktreeRemove must NOT be called when fix-conflict is blocked.
+	// WorktreeRemove must NOT be called when fix-conflict times out.
 	if n := countCalls(runner.calls, "WorktreeRemove"); n != 0 {
-		t.Errorf("WorktreeRemove must not be called when fix-conflict is blocked; got %d calls", n)
+		t.Errorf("WorktreeRemove must not be called when fix-conflict times out; got %d calls", n)
+	}
+}
+
+// TestMergeBack_ConflictFixBlockedIsWaitedOut: a fix-conflict agent that blocks
+// on a prompt is waited out like a worker, and the merge then completes.
+func TestMergeBack_ConflictFixBlockedIsWaitedOut(t *testing.T) {
+	const branch = "capataz/f-01-a"
+	runner := &fakeRunner{
+		mergeConflicted: map[string]bool{branch: true},
+		agentWaitSeq:    map[string][]string{"fix-conflict-f-01": {"blocked", "done"}},
+	}
+	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
+	iss := WaveIssue{Number: "01", Path: "/repo/.scratch/f/issues/01-a.md", Feature: "f", Status: "ready-for-agent", Branch: branch}
+
+	result := dispatchOne(cfg, runner, iss, func(string, ...any) {}, &sync.Mutex{})
+	if result.Status != "done" {
+		t.Fatalf("status = %q (%v), want done", result.Status, result.Err)
+	}
+	notes := callsOf(runner.calls, "Notify")
+	if len(notes) != 1 || !strings.Contains(notes[0].Args[0], "fix-conflict is waiting on a prompt") {
+		t.Errorf("Notify calls = %v, want one fix-conflict prompt notification", notes)
+	}
+	if n := countCalls(runner.calls, "WorktreeRemove"); n != 1 {
+		t.Errorf("WorktreeRemove calls: got %d, want 1", n)
 	}
 }

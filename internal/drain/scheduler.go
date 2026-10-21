@@ -249,21 +249,19 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		return failSafe("error", err)
 	}
 
-	// Step d: wait for the agent on the unfocused pane. blocked/timeout are
-	// needs-operator-attention: surface them, leave the worktree, do not merge.
-	// An agent that ended its turn with the issue `asking` is waiting on the
-	// operator: wait for the answer, deliver it, and wait on the agent again.
-	// Time spent asking does not count against the timeout.
+	// Step d: wait for the agent on the unfocused pane. A blocked agent is
+	// waited out (see waitAgent); a timeout leaves the worktree for the operator
+	// and does not merge. An agent that ended its turn with the issue `asking` is
+	// waiting on the operator: wait for the answer, deliver it, and wait on the
+	// agent again. Time spent blocked or asking does not count against the timeout.
 	budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
 	for {
-		logf("drain: [%s] waiting for agent %s (timeout=%dms)", iss.Number, agentName, budget.Milliseconds())
-		start := cfg.now()
-		status, err := runner.AgentWait(agentName, int(budget.Milliseconds()))
-		budget -= cfg.now().Sub(start)
+		var status string
+		status, budget, err = waitAgent(cfg, runner, agentName, paneID, fmt.Sprintf("%s %s", cfg.Feature, iss.Number), iss.Number, budget, logf)
 		if err != nil {
 			return failSafe("error", fmt.Errorf("agent wait: %w", err))
 		}
-		if status != "done" && status != "idle" {
+		if status != "done" {
 			return fail(status, nil) // leave the worktree for the operator to inspect
 		}
 		delivered, res := awaitAnswer(cfg, runner, iss, agentName, logf)
@@ -272,9 +270,6 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		}
 		if !delivered {
 			break
-		}
-		if budget <= 0 {
-			return fail("timeout", nil)
 		}
 	}
 
@@ -304,6 +299,70 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	}
 
 	return IssueResult{Issue: iss, Status: "done"}
+}
+
+// unblockedPoll bounds each `herdr agent wait` while an agent sits blocked;
+// the drain re-waits until it leaves blocked, however long that takes.
+const unblockedPoll = time.Hour
+
+// waitAgent waits up to budget for agent name (in paneID) to end its turn and
+// returns "done", "timeout", or another herdr status, plus the budget left.
+// A blocked agent (usually a permission prompt) is not abandoned: the operator
+// is notified once, the drain waits for the agent to leave blocked, and that
+// time does not count against budget. A timeout notifies too. who names the
+// work in notifications ("<feature> NN").
+func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget time.Duration, logf func(string, ...any)) (string, time.Duration, error) {
+	notified := false
+	for {
+		if budget <= 0 {
+			return timedOut(runner, name, paneID, who, num, logf), budget, nil
+		}
+		logf("drain: [%s] waiting for agent %s (timeout=%dms)", num, name, budget.Milliseconds())
+		start := cfg.now()
+		status, err := runner.AgentWait(name, int(budget.Milliseconds()))
+		budget -= cfg.now().Sub(start)
+		if err != nil {
+			return "error", budget, err
+		}
+		switch status {
+		case "done", "idle":
+			return "done", budget, nil
+		case "timeout":
+			return timedOut(runner, name, paneID, who, num, logf), budget, nil
+		case "blocked":
+		default:
+			return status, budget, nil
+		}
+
+		logf("drain: [%s] BLOCKED — agent %s in pane %s is waiting on a prompt; waiting for it to resume", num, name, paneID)
+		if !notified {
+			notified = true
+			title := fmt.Sprintf("capataz: %s is waiting on a prompt", who)
+			if err := runner.Notify(title, fmt.Sprintf("Agent %s needs input — check pane %s.", name, paneID)); err != nil {
+				logf("drain: [%s] notification failed: %v", num, err)
+			}
+		}
+		for {
+			st, err := runner.AgentUnblocked(name, int(unblockedPoll.Milliseconds()))
+			if err != nil {
+				return "error", budget, fmt.Errorf("wait for %s to leave blocked: %w", name, err)
+			}
+			if st != "blocked" && st != "timeout" {
+				break
+			}
+		}
+		logf("drain: [%s] agent %s resumed", num, name)
+	}
+}
+
+// timedOut notifies the operator that name ran out of time and returns "timeout".
+func timedOut(runner Runner, name, paneID, who, num string, logf func(string, ...any)) string {
+	logf("drain: [%s] agent %s timed out — keeping its worktree (pane %s)", num, name, paneID)
+	title := fmt.Sprintf("capataz: %s timed out", who)
+	if err := runner.Notify(title, fmt.Sprintf("Agent %s ran out of time — check pane %s.", name, paneID)); err != nil {
+		logf("drain: [%s] notification failed: %v", num, err)
+	}
+	return "timeout"
 }
 
 // askFailure is an awaitAnswer outcome that ends the dispatch via failSafe.
@@ -398,6 +457,7 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 		fmt.Fprintf(cfg.Out, "               (capataz-work claims → implements → commits → resolves)\n")
 		fmt.Fprintf(cfg.Out, "      cmd[5] : herdr agent wait %s --until done --until blocked --timeout %d\n",
 			agentName, cfg.AgentTimeoutMS)
+		fmt.Fprintf(cfg.Out, "               (blocked → herdr notification show; wait --until working|done|idle, then wait again)\n")
 		fmt.Fprintf(cfg.Out, "               (issue asking → herdr notification show; wait for\n")
 		fmt.Fprintf(cfg.Out, "                capataz issue answer %s \"…\", then prompt the answer and wait again)\n", iss.Path)
 		fmt.Fprintf(cfg.Out, "      cmd[6] : git -C %s rev-list --count HEAD..%s   (verify >= 1 commit)\n",

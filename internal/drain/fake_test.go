@@ -49,9 +49,19 @@ type fakeRunner struct {
 	// answers maps issue path -> successive IssueAnswer results (last repeats).
 	answers map[string][]string
 
-	// clock, when set, advances by waitElapsed on every AgentWait.
-	clock       *fakeClock
-	waitElapsed time.Duration
+	// agentWaitSeq maps agent name -> successive AgentWait results, consumed one
+	// per call; when exhausted, agentWaitStatus (or "done") applies.
+	agentWaitSeq map[string][]string
+
+	// unblockSeq maps agent name -> successive AgentUnblocked results, consumed
+	// one per call; when exhausted, "working".
+	unblockSeq map[string][]string
+
+	// clock, when set, advances by waitElapsed on every AgentWait and by
+	// blockedElapsed on every AgentUnblocked.
+	clock          *fakeClock
+	waitElapsed    time.Duration
+	blockedElapsed time.Duration
 
 	mu    sync.Mutex
 	calls []fakeCall
@@ -203,12 +213,38 @@ func (f *fakeRunner) AgentWait(target string, timeoutMS int) (string, error) {
 	if f.clock != nil {
 		f.clock.advance(f.waitElapsed)
 	}
+	if s, ok := f.pop(f.agentWaitSeq, target); ok {
+		return s, nil
+	}
 	if f.agentWaitStatus != nil {
 		if s, ok := f.agentWaitStatus[target]; ok {
 			return s, nil
 		}
 	}
 	return "done", nil
+}
+
+func (f *fakeRunner) AgentUnblocked(target string, timeoutMS int) (string, error) {
+	f.record("AgentUnblocked", target, strconv.Itoa(timeoutMS))
+	if f.clock != nil {
+		f.clock.advance(f.blockedElapsed)
+	}
+	if s, ok := f.pop(f.unblockSeq, target); ok {
+		return s, nil
+	}
+	return "working", nil
+}
+
+// pop consumes the next value of seq[key], if any.
+func (f *fakeRunner) pop(seq map[string][]string, key string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(seq[key]) == 0 {
+		return "", false
+	}
+	v := seq[key][0]
+	seq[key] = seq[key][1:]
+	return v, true
 }
 
 // fakeClock is a manual clock for Config.now / Config.sleep.

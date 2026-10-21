@@ -1,11 +1,14 @@
 package drain
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // mergeBack merges iss.Branch into cfg.RepoPath and removes the worktree.
-// On conflict it starts a fix-conflict agent in the base repo, waits for done,
-// then removes the worktree. Returns non-nil only on hard (non-conflict) errors
-// or when the fix-conflict agent itself blocks/times out.
+// On conflict it starts a fix-conflict agent in the base repo, waits for done
+// (waiting out a blocked agent), then removes the worktree. Returns non-nil only on hard (non-conflict) errors
+// or when the fix-conflict agent itself times out.
 func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, logf func(string, ...any)) error {
 	conflicted, err := runner.Merge(iss.Branch, cfg.RepoPath)
 	if err != nil {
@@ -39,13 +42,13 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 			return fmt.Errorf("fix-conflict %w", err)
 		}
 
-		logf("drain: [%s] waiting for fix-conflict agent %s (timeout=%dms)", iss.Number, fixName, cfg.AgentTimeoutMS)
-		fixStatus, err := runner.AgentWait(fixName, cfg.AgentTimeoutMS)
+		budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
+		fixStatus, _, err := waitAgent(cfg, runner, fixName, basePaneID, fmt.Sprintf("%s %s fix-conflict", cfg.Feature, iss.Number), iss.Number, budget, logf)
 		if err != nil {
 			return fmt.Errorf("fix-conflict agent wait: %w", err)
 		}
 		if fixStatus != "done" {
-			// blocked or timeout: leave the base workspace open for the operator.
+			// timeout: leave the base workspace open for the operator.
 			return fmt.Errorf("fix-conflict agent %s for issue %s ended with status %q — operator attention required",
 				fixName, iss.Number, fixStatus)
 		}
