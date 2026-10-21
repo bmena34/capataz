@@ -260,6 +260,15 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// reliably deliver the task (retrying if a fresh claude drops the first prompt).
 	// capataz-work claims, implements, commits on the branch, and resolves.
 	prompt := workPrompt(iss)
+	// answered counts the operator answers on the issue that the agent has seen
+	// (or that predate it); a higher count after a done is an answer given before
+	// the agent ended its turn. -1: unknown, so only the asking path delivers.
+	answered := -1
+	if _, n, err := runner.IssueAnswer(iss.Path); err != nil {
+		logf("drain: [%s] cannot read answers (%v) — an early answer will not be detected", iss.Number, err)
+	} else {
+		answered = n
+	}
 	if err := startAgentWithTask(runner, agentName, paneID, prompt, cfg.SkipPermissions, iss.Number, logf); err != nil {
 		return failSafe("error", err)
 	}
@@ -268,7 +277,8 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// waited out (see waitAgent); a timeout leaves the worktree for the operator
 	// and does not merge. An agent that ended its turn with the issue `asking` is
 	// waiting on the operator: wait for the answer, deliver it, and wait on the
-	// agent again. Time spent blocked or asking does not count against the timeout
+	// agent again. An answer given before the agent ended its turn is delivered
+	// the same way. Time spent blocked or asking does not count against the timeout
 	// or toward a stall alert (see stallWatch).
 	budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
 	stall := newStallWatch(cfg, runner, iss, agentName, paneID, checkoutPath)
@@ -281,7 +291,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		if status != "done" {
 			return fail(status, nil) // leave the worktree for the operator to inspect
 		}
-		delivered, res := awaitAnswer(cfg, runner, iss, agentName, logf)
+		delivered, res := awaitAnswer(cfg, runner, iss, agentName, &answered, logf)
 		if res != nil {
 			return failSafe(res.status, res.err)
 		}
@@ -420,19 +430,36 @@ type askFailure struct {
 	err    error
 }
 
-// awaitAnswer handles an agent that ended its turn with its issue `asking`:
-// it notifies the operator, polls the issue until it leaves `asking`, and, if
-// the operator answered (back to `claimed`), prompts the same agent with the
-// answer. delivered=false means the issue was not asking — carry on to commit
-// verification. Any other status the issue moves to ends the dispatch.
-func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, logf func(string, ...any)) (delivered bool, fail *askFailure) {
+// awaitAnswer handles an agent that ended its turn with an operator answer
+// pending. If the issue is `asking`, it notifies the operator, polls the issue
+// until it leaves `asking`, and, if the operator answered (back to `claimed`),
+// prompts the same agent with the answer. If the issue is already `claimed` but
+// holds more answers than *answered, the operator answered before the agent
+// ended its turn: that answer is delivered the same way. *answered tracks the
+// answers delivered (-1: unknown). delivered=false means no answer was pending
+// — carry on to commit verification. Any other status the issue moves to from
+// `asking` ends the dispatch.
+func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, answered *int, logf func(string, ...any)) (delivered bool, fail *askFailure) {
 	st, err := runner.IssueStatus(iss.Path)
 	if err != nil {
 		logf("drain: [%s] cannot read issue status (%v) — assuming it is not asking", iss.Number, err)
 		return false, nil
 	}
-	if normStatus(st) != issues.StatusAsking {
-		return false, nil
+	if st = normStatus(st); st != issues.StatusAsking {
+		if st != issues.StatusClaimed || *answered < 0 {
+			return false, nil
+		}
+		answer, n, err := runner.IssueAnswer(iss.Path)
+		if err != nil {
+			logf("drain: [%s] cannot read answers (%v) — assuming none is pending", iss.Number, err)
+			return false, nil
+		}
+		if n <= *answered {
+			return false, nil
+		}
+		logf("drain: [%s] the question was answered before agent %s ended its turn", iss.Number, agentName)
+		*answered = n
+		return deliverAnswer(runner, iss, agentName, answer, logf)
 	}
 
 	question, err := runner.IssueQuestion(iss.Path)
@@ -459,10 +486,19 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, log
 		return false, &askFailure{"blocked", fmt.Errorf("issue moved from asking to %s", st)}
 	}
 
-	answer, err := runner.IssueAnswer(iss.Path)
+	answer, n, err := runner.IssueAnswer(iss.Path)
 	if err != nil {
 		return false, &askFailure{"error", fmt.Errorf("read answer: %w", err)}
 	}
+	if *answered >= 0 {
+		*answered = n
+	}
+	return deliverAnswer(runner, iss, agentName, answer, logf)
+}
+
+// deliverAnswer prompts agentName with the operator's answer and confirms it
+// resumed working, retrying a dropped prompt.
+func deliverAnswer(runner Runner, iss WaveIssue, agentName, answer string, logf func(string, ...any)) (bool, *askFailure) {
 	logf("drain: [%s] delivering answer to agent %s", iss.Number, agentName)
 	prompt := fmt.Sprintf("Your question on %s was answered: %s. Continue the issue.", iss.Path, answer)
 	for attempt := 1; attempt <= 3; attempt++ {

@@ -49,8 +49,10 @@ type Runner interface {
 
 	// IssueQuestion / IssueAnswer return the latest agent question / operator
 	// answer recorded on the issue file (capataz issue ask / answer), or "".
+	// IssueAnswer also returns how many answers the file holds, so the drain can
+	// tell an answer it has not delivered yet from one it has.
 	IssueQuestion(path string) (string, error)
-	IssueAnswer(path string) (string, error)
+	IssueAnswer(path string) (string, int, error)
 
 	// Notify raises an operator notification (`herdr notification show`).
 	Notify(title, body string) error
@@ -213,9 +215,8 @@ func (r *realRunner) IssueQuestion(path string) (string, error) {
 	return q, err
 }
 
-func (r *realRunner) IssueAnswer(path string) (string, error) {
-	a, _, err := issues.LatestAnswer(path)
-	return a, err
+func (r *realRunner) IssueAnswer(path string) (string, int, error) {
+	return issues.LatestAnswer(path)
 }
 
 func (r *realRunner) Notify(title, body string) error {
