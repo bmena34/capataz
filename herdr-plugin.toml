@@ -16,7 +16,7 @@
 id = "bmena34.capataz"
 name = "Capataz"
 version = "0.2.0"
-min_herdr_version = "0.8.0"
+min_herdr_version = "0.9.5"
 description = "capataz's .scratch issue backlog, plan-usage and per-agent context gauges, and drain orchestrator as a herdr plugin."
 platforms = ["macos", "linux"]
 
