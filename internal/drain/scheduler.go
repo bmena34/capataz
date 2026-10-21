@@ -162,6 +162,12 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	if cfg.sleep == nil {
 		cfg.sleep = time.Sleep
 	}
+	if cfg.stallPoll <= 0 {
+		cfg.stallPoll = stallPoll
+	}
+	if cfg.walk == nil {
+		cfg.walk = newestMtime
+	}
 	fail := func(status string, err error) IssueResult {
 		return IssueResult{Issue: iss, Status: status, Err: err}
 	}
@@ -253,11 +259,13 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// waited out (see waitAgent); a timeout leaves the worktree for the operator
 	// and does not merge. An agent that ended its turn with the issue `asking` is
 	// waiting on the operator: wait for the answer, deliver it, and wait on the
-	// agent again. Time spent blocked or asking does not count against the timeout.
+	// agent again. Time spent blocked or asking does not count against the timeout
+	// or toward a stall alert (see stallWatch).
 	budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
+	stall := newStallWatch(cfg, runner, iss, agentName, paneID, checkoutPath)
 	for {
 		var status string
-		status, budget, err = waitAgent(cfg, runner, agentName, paneID, fmt.Sprintf("%s %s", cfg.Feature, iss.Number), iss.Number, budget, logf)
+		status, budget, err = waitAgent(cfg, runner, agentName, paneID, fmt.Sprintf("%s %s", cfg.Feature, iss.Number), iss.Number, budget, stall, logf)
 		if err != nil {
 			return failSafe("error", fmt.Errorf("agent wait: %w", err))
 		}
@@ -271,6 +279,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		if !delivered {
 			break
 		}
+		stall.rearm()
 	}
 
 	// Step e: verify the agent actually produced work. capataz-work commits on the
@@ -310,16 +319,26 @@ const unblockedPoll = time.Hour
 // A blocked agent (usually a permission prompt) is not abandoned: the operator
 // is notified once, the drain waits for the agent to leave blocked, and that
 // time does not count against budget. A timeout notifies too. who names the
-// work in notifications ("<feature> NN").
-func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget time.Duration, logf func(string, ...any)) (string, time.Duration, error) {
+// work in notifications ("<feature> NN"). A non-nil stall is checked every
+// cfg.stallPoll while the agent works.
+func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget time.Duration, stall *stallWatch, logf func(string, ...any)) (string, time.Duration, error) {
 	notified := false
+	logged := false
 	for {
 		if budget <= 0 {
 			return timedOut(runner, name, paneID, who, num, logf), budget, nil
 		}
-		logf("drain: [%s] waiting for agent %s (timeout=%dms)", num, name, budget.Milliseconds())
+		if !logged {
+			logged = true
+			logf("drain: [%s] waiting for agent %s (timeout=%dms)", num, name, budget.Milliseconds())
+		}
+		slice := budget
+		if stall != nil && slice > cfg.stallPoll {
+			slice = cfg.stallPoll
+		}
+		tick := slice < budget // this wait ends at a stall poll, not the outer timeout
 		start := cfg.now()
-		status, err := runner.AgentWait(name, int(budget.Milliseconds()))
+		status, err := runner.AgentWait(name, int(slice.Milliseconds()))
 		budget -= cfg.now().Sub(start)
 		if err != nil {
 			return "error", budget, err
@@ -328,6 +347,10 @@ func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget 
 		case "done", "idle":
 			return "done", budget, nil
 		case "timeout":
+			if tick {
+				stall.check(logf)
+				continue
+			}
 			return timedOut(runner, name, paneID, who, num, logf), budget, nil
 		case "blocked":
 		default:
@@ -352,6 +375,10 @@ func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget 
 			}
 		}
 		logf("drain: [%s] agent %s resumed", num, name)
+		logged = false
+		if stall != nil {
+			stall.rearm()
+		}
 	}
 }
 
