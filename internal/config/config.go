@@ -17,10 +17,6 @@ type Config struct {
 	Drain   Drain   `json:"drain"`
 }
 
-// DefaultPRCap is the PR cap used when neither the global nor a per-repo drain
-// section sets one.
-const DefaultPRCap = 3
-
 // DefaultStallMinutes is how long a working agent may go without changing a
 // file in its worktree before the drain notifies the operator.
 const DefaultStallMinutes = 15
@@ -31,10 +27,6 @@ type Drain struct {
 	// BranchPrefix is prepended to dispatched branch names. Empty by default,
 	// so branches look like <feature>-NN-slug.
 	BranchPrefix string `json:"branch_prefix"`
-	// Verify is the test command run to verify a dispatched branch ("" = none).
-	Verify string `json:"verify"`
-	// PRCap is the max open PRs the drain keeps in flight (0 = default 3).
-	PRCap int `json:"pr_cap"`
 	// StallMinutes is how many minutes a working agent may go without a file
 	// change in its worktree before the operator is notified (0 = default 15).
 	StallMinutes int `json:"stall_minutes"`
@@ -46,24 +38,20 @@ type Drain struct {
 // the global value) from an explicit empty/zero value.
 type DrainRepo struct {
 	BranchPrefix *string `json:"branch_prefix"`
-	Verify       *string `json:"verify"`
-	PRCap        *int    `json:"pr_cap"`
 	StallMinutes *int    `json:"stall_minutes"`
 }
 
 // DrainSettings is the effective drain configuration for one repo.
 type DrainSettings struct {
 	BranchPrefix string
-	Verify       string
-	PRCap        int
 	StallMinutes int
 }
 
 // DrainFor resolves the effective drain settings for repoRoot: a per-repo entry
-// overrides the global value field by field; pr_cap and stall_minutes fall back
-// to their defaults when unset or non-positive.
+// overrides the global value field by field; stall_minutes falls back to its
+// default when unset or non-positive.
 func (c Config) DrainFor(repoRoot string) DrainSettings {
-	s := DrainSettings{BranchPrefix: c.Drain.BranchPrefix, Verify: c.Drain.Verify, PRCap: c.Drain.PRCap, StallMinutes: c.Drain.StallMinutes}
+	s := DrainSettings{BranchPrefix: c.Drain.BranchPrefix, StallMinutes: c.Drain.StallMinutes}
 	r, ok := c.Drain.Repos[filepath.Clean(repoRoot)]
 	if !ok {
 		r, ok = c.Drain.Repos[repoRoot]
@@ -72,18 +60,9 @@ func (c Config) DrainFor(repoRoot string) DrainSettings {
 		if r.BranchPrefix != nil {
 			s.BranchPrefix = *r.BranchPrefix
 		}
-		if r.Verify != nil {
-			s.Verify = *r.Verify
-		}
-		if r.PRCap != nil {
-			s.PRCap = *r.PRCap
-		}
 		if r.StallMinutes != nil {
 			s.StallMinutes = *r.StallMinutes
 		}
-	}
-	if s.PRCap <= 0 {
-		s.PRCap = DefaultPRCap
 	}
 	if s.StallMinutes <= 0 {
 		s.StallMinutes = DefaultStallMinutes
@@ -118,7 +97,7 @@ type Usage struct {
 // Default returns the built-in configuration.
 func Default() Config {
 	return Config{
-		Drain: Drain{PRCap: DefaultPRCap, StallMinutes: DefaultStallMinutes},
+		Drain: Drain{StallMinutes: DefaultStallMinutes},
 		Usage: Usage{
 			Enabled:         true,
 			URL:             "https://api.anthropic.com/api/oauth/usage",
