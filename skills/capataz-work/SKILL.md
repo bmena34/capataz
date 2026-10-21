@@ -94,6 +94,29 @@ In the normal (non-worktree) case, behavior is unchanged: don't commit unless th
 
 Either way: **Never commit `.scratch/`.** It's the local-only backlog, ignored by the global git excludes file `capataz install` sets up. Never `git add -f` it, and never add `.scratch` to a repo's `.gitignore` — that line would get pushed.
 
+### 4e. Terraform race check (only if the diff touches Terraform)
+
+Before resolving, check whether your change touches Terraform:
+
+```sh
+capataz tf check
+```
+
+It diffs this branch against the base, `origin/main` (else `main`) by default. If your branch was cut from another branch (a drain on a feature branch cuts worktrees from it), pass `--base <that-branch>`, or the base's own unmerged changes show up as yours. It prints `no Terraform changes vs <base>` when no `*.tf`, `*.tfvars` or `.terraform.lock.hcl` file changed — then skip the rest of this step. Otherwise it lists the affected root modules and any findings (open PRs or other worktrees touching the same roots, roots the base changed since you branched, files mapping to no known root). Exit code: `0` clean, `1` findings, `2` error.
+
+When Terraform did change:
+
+1. **Review in a fresh context.** Spawn a subagent (the Agent/Task tool) to run the **`/capataz-terraform`** skill on this worktree, passing the feature slug (the `<feature>` of your issue path) and the roots from `capataz tf check`. It files each finding as a `needs-triage` issue and ends with a `clean` or `N findings` verdict line. **If you are yourself a subagent**, you can't spawn one — skip it and say the Terraform review is still owed.
+2. **Any finding from either goes to the operator.** In isolated-worktree mode (4c), ask via the CLI, listing every finding (the tf check messages with their PR URLs, and the paths of the issues the review filed) and the options:
+
+   ```sh
+   capataz issue ask <abs issue path> "Terraform race findings: <list>. Options: proceed (resolve as is) / wait (hold until <PR or branch> lands) / rework (change the Terraform first)."
+   ```
+
+   then end your turn. Interactively, ask the same in chat. Act on the answer before resolving: proceed → step 5; wait → commit your work (worktree mode), `capataz issue comment` what it waits on, set it `needs-info` and stop (the drain keeps the worktree and branch); rework → change the code and re-run this step.
+
+Never `terraform apply` as part of this check.
+
 ### 5. Resolve it
 
 When the acceptance criteria are met and checks pass:
