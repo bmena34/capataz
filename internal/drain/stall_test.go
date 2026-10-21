@@ -191,3 +191,33 @@ func TestNewestMtime_SkipsPrunedDirs(t *testing.T) {
 		t.Errorf("a write to a.go should advance the newest mtime")
 	}
 }
+
+func TestStall_VanishedAgentEndsPromptly(t *testing.T) {
+	// The agent works for two stall polls, then its pane is closed: the wait
+	// ends at once instead of polling a missing agent until the budget runs out.
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		agentWaitSeq:   map[string][]string{"drain-f-01": {"timeout", "timeout", statusGone}},
+		clock:          clock,
+		waitElapsed:    time.Minute,
+	}
+	out := &strings.Builder{}
+	if err := Drain(stallCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	if n := countCalls(runner.calls, "AgentWait"); n != 3 {
+		t.Errorf("AgentWait calls = %d, want 3 (stop once the agent is gone)", n)
+	}
+	if n := len(stallNotes(runner.calls)); n != 0 {
+		t.Errorf("stall notifications = %d, want 0", n)
+	}
+	for _, op := range []string{"Merge", "WorktreeRemove"} {
+		if n := countCalls(runner.calls, op); n != 0 {
+			t.Errorf("%s calls = %d, want 0 (failSafe keeps the claimed worktree)", op, n)
+		}
+	}
+	if !strings.Contains(out.String(), "is gone") {
+		t.Errorf("vanished agent not surfaced:\n%s", out)
+	}
+}
