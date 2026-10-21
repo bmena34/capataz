@@ -31,6 +31,7 @@ import (
 	"os"
 
 	"github.com/bmena34/capataz/internal/config"
+	"github.com/bmena34/capataz/internal/worktree"
 )
 
 // Run parses args and runs the command; it is `capataz drain`.
@@ -102,10 +103,20 @@ func Run(args []string) error {
 		RepoPath:        repo,
 		DryRun:          *dryRun,
 		Out:             os.Stdout,
-		StallMinutes:    config.Load().DrainFor(repo).StallMinutes,
+		StallMinutes:    config.Load().DrainFor(configKey(repo)).StallMinutes,
 	}
 
 	return Drain(cfg, runner)
+}
+
+// configKey is the drain.repos key for repo: its primary checkout, the same
+// key `capataz issue waves` uses for branch_prefix, so --repo ., a
+// subdirectory or a linked worktree all hit the same entry. Falls back to repo.
+func configKey(repo string) string {
+	if p, err := worktree.PrimaryCheckout(repo); err == nil {
+		return p
+	}
+	return repo
 }
 
 // selfBin is the capataz binary to shell out to: CAPATAZ_BIN if set, else the
