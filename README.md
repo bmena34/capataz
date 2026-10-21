@@ -68,14 +68,16 @@ The `Status:` line is the kanban column. The lifecycle:
 ```
 needs-triage ──▶ ready-for-agent ──▶ claimed ──▶ resolved
      │                (todo)          (doing)      (done)
-     └──▶ wontfix
+     └──▶ wontfix                       ▲ │
+                                 answer │ ▼ ask
+                                      asking
 ```
 
 `capataz issues` (or the herdr backlog popup) shows a repo's backlog grouped by feature, with status badges, attention-first counts, and the current parallel-safe wave. It re-reads the files live, so claims and resolutions show up as agents make them. The format is compatible with mattpocock's `/to-issues` / `/triage` / `/wayfinder`, so those planning skills interoperate.
 
 ### The skills
 
-`capataz install` ships ten skills:
+`capataz install` ships eleven skills:
 
 **Plan** —
 - **`capataz-start`** — the front door: grills a fuzzy idea into a lean plan (`.scratch/<feature>/plan.md`), then hands off to the splitter.
@@ -93,6 +95,7 @@ needs-triage ──▶ ready-for-agent ──▶ claimed ──▶ resolved
 - **`capataz-review`** — fresh-context correctness review of a feature's diff; files findings as issues.
 - **`capataz-security`** — fresh-context, OWASP-lens audit of the same diff; files vulnerabilities as severity-tagged issues.
 - **`capataz-comment-rot`** — pre-PR docs hygiene: scrubs the README, CLAUDE.md, and code comments touched by the changes.
+- **`capataz-tfreview`** — fresh-context review of a branch's Terraform changes for races a script can't see (apply ordering, eventual consistency, shared resources). On demand only; neither the drain nor `capataz-work` runs it.
 
 **Learn** —
 - **`capataz-teach`** — explains a codebase area grounded in the real files (`file:line` citations), then quizzes you on it.
@@ -114,15 +117,30 @@ capataz drain --dry-run --repo "$PWD" <feature>        # show the plan, touch no
 From each issue's `Touches:` line, capataz derives which ready issues are **parallel-safe** (pairwise-disjoint files, no blocking edge). The drain then loops:
 
 1. Take a parallel-safe wave of `ready-for-agent` issues, up to `--concurrency`.
-2. For each, create a herdr worktree on branch `capataz/<feature>-NN-slug`, pre-trust it (`capataz trust-dir`), and start a fresh Claude agent running `capataz-work` in it.
+2. For each, create a herdr worktree on branch `<feature>-NN-slug` (prefix it with `--branch-prefix` or `drain.branch_prefix`), pre-trust it (`capataz trust-dir`), and start a fresh Claude agent running `capataz-work` in it.
 3. Wait for each agent, check it actually committed, and merge its branch back into your base. A conflicting merge starts a `capataz-fix-conflict` agent in the base repo; the drain checks the merge completed before moving on.
 4. Re-scan — issues become eligible as their blockers resolve — and repeat until nothing is left.
 
 Each agent is its own herdr pane, so you can watch or step into any of them.
 
+**Questions.** A drain worker that needs a decision from you doesn't ask in chat — nobody reads the drain's chat. It runs `capataz issue ask <issue> "<question>"`, which records the question under the issue's `## Comments` and sets `Status: asking`, then ends its turn. The drain shows a herdr notification with the question and logs the exact command to answer it:
+
+```sh
+capataz issue answer <issue> "cookies"
+```
+
+(or tell any Claude session to). The drain picks the answer up within seconds and prompts it into the **same** worker session, which continues where it stopped; a worker may ask more than once. If you move the issue somewhere else instead (`needs-info`, `wontfix`, …), the drain stops waiting and keeps the worktree.
+
+**Stalls.** The drain never silently abandons a worker:
+
+- **Blocked** — an agent waiting on a prompt (usually a permission prompt) shows as `blocked` in herdr. The drain notifies once and waits for it to resume, then verifies and merges as usual.
+- **No progress** — an agent herdr reports as working whose worktree has had no file change for `drain.stall_minutes` (default 15) gets one notification naming the pane and worktree. A later change re-arms it. The drain never nudges or kills it.
+- **Timeout** — an agent still running after `--timeout` (default 1h) is notified and left in place, unmerged. Time spent blocked or waiting on an answer doesn't count against it.
+- **Stopped without committing** — an agent that ends its turn with nothing committed is never cleaned up while its worktree has changes or its issue is still `claimed` (it may have asked in chat anyway — you get a notification for that case). The worktree and branch stay for you.
+
 > **⚠️ Parallelism belongs to the drain.** Sessions you start by hand run in the repo's own working tree — two of those on one repo at once can clobber each other. To parallelize, let the drain isolate each agent in its own worktree.
 
-> **Permissions.** Dispatched agents run in Claude Code's default permission mode; a permission prompt shows the agent as `blocked` in herdr. `--skip-perms` runs them with `--dangerously-skip-permissions` instead (accept the one-time bypass screen first). A per-project allowlist in your repo's `.claude/settings.json` is a safer way to cut the prompt noise.
+> **Permissions.** Dispatched agents run in Claude Code's default permission mode with `Bash`, `Edit`, `Write`, `Read`, `Glob` and `Grep` pre-allowed; any other permission prompt shows the agent as `blocked` in herdr (see Stalls). `--skip-perms` runs them with `--dangerously-skip-permissions` instead (accept the one-time bypass screen first). A per-project allowlist in your repo's `.claude/settings.json` is a safer way to cut the prompt noise.
 
 ### The review loop
 
@@ -222,11 +240,15 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
     "keychain_service": "Claude Code-credentials",
     "plan_type": ""
   },
-  "context": { "limits": {} }
+  "context": { "limits": {} },
+  "drain": { "branch_prefix": "", "stall_minutes": 15 }
 }
 ```
 
 - `context.limits` — pin a context-window size per model id. Transcripts record a bare model id with no `[1m]` marker, so a model offered at both 200k and 1M looks like 200k unless you pin it: `{ "claude-opus-5": "1m" }`. `CAPATAZ_CONTEXT_LIMIT=1m` overrides every session for one run.
+- `drain.branch_prefix` — prepended to dispatch branch names; `--branch-prefix` overrides it per run.
+- `drain.stall_minutes` — minutes a working agent may go without a file change before the drain notifies you.
+- `drain.repos` — per-repo overrides of the `drain` keys, keyed by absolute repo path: `{ "/Users/me/code/app": { "stall_minutes": 30 } }`.
 - `usage.plan_type` — `"api"` replaces the session/weekly bars with a "billed per token" label for enterprise or API-billing plans. Leave blank to auto-detect.
 
 > **Note on the usage gauge.** To show your plan usage, `capataz` reads your Claude Code OAuth token from the macOS Keychain and calls `api/oauth/usage` — the **same endpoint Claude Code's `/usage` uses**. It is *unofficial* and undocumented, and may change or stop working at any time. It only reads *your* token to display *your* usage. Set `usage.enabled` to `false` to turn it off, or update `url` / `keychain_service` if Anthropic changes them.
