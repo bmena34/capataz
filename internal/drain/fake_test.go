@@ -70,8 +70,24 @@ type fakeRunner struct {
 	waitElapsed    time.Duration
 	blockedElapsed time.Duration
 
+	// turns, when set, models herdr's agent state: an agent that ended its turn
+	// stays "done" until it picks up a prompt, and AgentWait on a "done" agent
+	// returns at once (counted in staleWaits). Absent: AgentTurn says "working".
+	turns *fakeTurns
+
 	mu    sync.Mutex
 	calls []fakeCall
+}
+
+// fakeTurns is the per-run agent state model (one agent per test).
+type fakeTurns struct {
+	status     string // "" before the first prompt, then "working"/"done"
+	completion int    // completion_seq: bumped when a turn ends
+	pending    bool   // a prompt sent to a done agent, not yet picked up
+	lag        int    // AgentTurn polls before a pending prompt is picked up
+	lagLeft    int
+	drop       int // prompts to a done agent that are silently dropped
+	staleWaits int // AgentWait calls that matched a done left over from an earlier turn
 }
 
 func (f *fakeRunner) record(op string, args ...string) {
@@ -206,7 +222,37 @@ func (f *fakeRunner) AgentStart(name, paneID string, skipPerms bool) error {
 
 func (f *fakeRunner) AgentPrompt(name, prompt string) error {
 	f.record("AgentPrompt", name, prompt)
+	if t := f.turns; t != nil {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch {
+		case t.status == "":
+			t.status = "working"
+		case t.status == "done" && t.drop > 0:
+			t.drop--
+		case t.status == "done":
+			t.pending, t.lagLeft = true, t.lag
+		}
+	}
 	return nil
+}
+
+func (f *fakeRunner) AgentTurn(name string) (string, int, error) {
+	f.record("AgentTurn", name)
+	t := f.turns
+	if t == nil {
+		return "working", 0, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t.pending {
+		if t.lagLeft > 0 {
+			t.lagLeft--
+		} else {
+			t.pending, t.status = false, "working"
+		}
+	}
+	return t.status, t.completion, nil
 }
 
 func (f *fakeRunner) AgentReachedWorking(name string) bool {
@@ -231,6 +277,17 @@ func (f *fakeRunner) AgentWait(target string, timeoutMS int) (string, error) {
 	}
 	if err := f.agentWaitErr[target]; err != nil {
 		return "", err
+	}
+	if t := f.turns; t != nil {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if t.status == "done" {
+			t.staleWaits++
+		} else {
+			t.status = "done"
+			t.completion++
+		}
+		return "done", nil
 	}
 	if s, ok := f.pop(f.agentWaitSeq, target); ok {
 		return s, nil
