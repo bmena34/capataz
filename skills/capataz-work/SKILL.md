@@ -88,6 +88,7 @@ If the dispatch prompt tells you that you are running in an **isolated git workt
   ```
 
   keep working on anything that doesn't depend on the answer, then end your turn. The drain notifies the operator and delivers the answer to this same session as a prompt — continue the issue from there. You may ask more than once. `needs-info` (step 4) stays for "this issue is underspecified, stop".
+- **Run long commands in the foreground.** Never end your turn while a background shell you started is still running: the drain treats a turn end as the end of your work and only waits a few minutes for you to resume. The one exception is ending your turn after `capataz issue ask`.
 - **The issue path in the prompt is absolute.** It points at the primary checkout's `.scratch/` (which is gitignored and therefore absent in the worktree). Use that absolute path verbatim for `capataz issue claim/resolve` — never a relative one.
 
 In the normal (non-worktree) case, behavior is unchanged: don't commit unless the user asks; just surface the diff.

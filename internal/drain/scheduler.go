@@ -278,7 +278,9 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// and does not merge. An agent that ended its turn with the issue `asking` is
 	// waiting on the operator: wait for the answer, deliver it, and wait on the
 	// agent again. An answer given before the agent ended its turn is delivered
-	// the same way. Time spent blocked or asking does not count against the timeout
+	// the same way. An agent that ended its turn with the issue still claimed and
+	// its work unfinished gets a grace window to start working again on its own
+	// (see awaitResume). Time spent blocked or asking does not count against the timeout
 	// or toward a stall alert (see stallWatch).
 	budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
 	stall := newStallWatch(cfg, runner, iss, agentName, paneID, checkoutPath)
@@ -296,7 +298,11 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 			return failSafe(res.status, res.err)
 		}
 		if !delivered {
-			break
+			var resumed bool
+			resumed, budget = awaitResume(cfg, runner, iss, agentName, checkoutPath, budget, logf)
+			if !resumed {
+				break
+			}
 		}
 		stall.rearm()
 	}
@@ -496,6 +502,70 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, ans
 	return deliverAnswer(cfg, runner, iss, agentName, answer, logf)
 }
 
+// defaultResumeGraceMS is the awaitResume window when cfg.ResumeGraceMS is unset.
+const defaultResumeGraceMS = 180_000
+
+// awaitResume handles an agent that ended its turn with the issue still
+// claimed and its work unfinished (no commits on the branch, or a dirty
+// worktree). Claude Code wakes an agent that ended its turn while one of its
+// background shells ran, so it waits up to cfg.ResumeGraceMS (capped by
+// budget) for the agent to start working again. resumed=true means it did, or
+// its work finished meanwhile: wait on it again. Otherwise the caller carries
+// on to commit verification and failSafe. Returns the budget left.
+func awaitResume(cfg Config, runner Runner, iss WaveIssue, agentName, checkoutPath string, budget time.Duration, logf func(string, ...any)) (bool, time.Duration) {
+	if !unfinished(cfg, runner, iss, checkoutPath) {
+		return false, budget
+	}
+	grace := time.Duration(cfg.ResumeGraceMS) * time.Millisecond
+	if grace <= 0 {
+		grace = defaultResumeGraceMS * time.Millisecond
+	}
+	if grace > budget {
+		grace = budget
+	}
+	if grace <= 0 {
+		return false, budget
+	}
+	logf("drain: [%s] agent %s ended its turn with the issue claimed and its work unfinished — waiting %dms for it to resume (a background shell may still be running)",
+		iss.Number, agentName, grace.Milliseconds())
+	start := cfg.now()
+	st, err := runner.AgentResumed(agentName, int(grace.Milliseconds()))
+	budget -= cfg.now().Sub(start)
+	switch {
+	case err != nil:
+		logf("drain: [%s] waiting for agent %s to resume failed: %v", iss.Number, agentName, err)
+	case st == "working" || st == "blocked":
+		logf("drain: [%s] agent %s resumed", iss.Number, agentName)
+		return true, budget
+	}
+	// It may have resumed and finished between two looks.
+	if !unfinished(cfg, runner, iss, checkoutPath) {
+		logf("drain: [%s] agent %s finished its work after ending its turn", iss.Number, agentName)
+		return true, budget
+	}
+	logf("drain: [%s] agent %s did not resume (%s)", iss.Number, agentName, st)
+	return false, budget
+}
+
+// unfinished reports whether iss is still claimed with no commits on its
+// branch or a dirty worktree. Any read error counts as finished: there is
+// nothing to wait for, and failSafe reports the error.
+func unfinished(cfg Config, runner Runner, iss WaveIssue, checkoutPath string) bool {
+	st, err := runner.IssueStatus(iss.Path)
+	if err != nil || normStatus(st) != issues.StatusClaimed {
+		return false
+	}
+	dirty, err := runner.WorktreeDirty(checkoutPath)
+	if err != nil {
+		return false
+	}
+	if dirty {
+		return true
+	}
+	ahead, err := runner.CommitsAhead(cfg.RepoPath, iss.Branch)
+	return err == nil && ahead == 0
+}
+
 // resumeTimeout bounds how long deliverAnswer waits for the agent to pick up
 // the answer before resubmitting it; resumePoll is how often it looks.
 const (
@@ -586,6 +656,7 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 func workPrompt(iss WaveIssue) string {
 	return fmt.Sprintf("run /capataz-work on the issue at %s. You are in an isolated git worktree on branch %s: "+
 		"commit your work on this branch when you resolve, and do not merge or switch branches — the drain merges it back. "+
-		"If you need an operator decision, run `capataz issue ask %s \"<question with options>\"` and end your turn; never ask in chat.",
+		"If you need an operator decision, run `capataz issue ask %s \"<question with options>\"` and end your turn; never ask in chat. "+
+		"Run long commands in the foreground, and never end your turn while a background shell you started is still running (ending it after `capataz issue ask` is the only exception).",
 		iss.Path, iss.Branch, iss.Path)
 }
