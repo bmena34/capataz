@@ -15,7 +15,7 @@ import (
 // metadataSource identifies this plugin to `herdr pane report-metadata`. herdr
 // scopes reported metadata by source so unrelated reporters don't clobber each
 // other's tokens.
-const metadataSource = "bmena34.capataz-herdr"
+const metadataSource = "bmena34.capataz"
 
 // maxReportFailures is how many consecutive agent-list failures the reporter
 // tolerates before exiting. Sweeps only fail when herdr itself is unreachable —
