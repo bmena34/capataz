@@ -4,18 +4,32 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
-// fakeRunner drives collect() without a herdr server.
+// fakeRunner drives collect() and reportSweep() without a herdr server.
 type fakeRunner struct {
-	agents []Agent
-	err    error
-	plan   string
-	planNo error
+	agents    []Agent
+	err       error
+	plan      string
+	planNo    error
+	reported  map[string]string // pane id -> last reported token value
+	reportErr error
 }
 
 func (f *fakeRunner) AgentList() ([]Agent, error) { return f.agents, f.err }
 func (f *fakeRunner) PlanUsage() (string, error)  { return f.plan, f.planNo }
+
+func (f *fakeRunner) ReportContext(paneID, value string, _ time.Duration) error {
+	if f.reportErr != nil {
+		return f.reportErr
+	}
+	if f.reported == nil {
+		f.reported = map[string]string{}
+	}
+	f.reported[paneID] = value
+	return nil
+}
 
 func TestCollect_ReadsContextPerPane(t *testing.T) {
 	dir := t.TempDir()
