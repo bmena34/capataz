@@ -100,6 +100,15 @@ needs-triage ──▶ ready-for-agent ──▶ claimed ──▶ resolved
 **Learn** —
 - **`capataz-teach`** — explains a codebase area grounded in the real files (`file:line` citations), then quizzes you on it.
 
+`capataz install` also installs four agent definitions into `~/.claude/agents`. Each is a thin persona over one of the skills, for handing work to a subagent with a clean context instead of running the skill inline:
+
+- **`capataz-implementer`**: `capataz-work` on one issue.
+- **`capataz-reviewer`**: `capataz-review` / `capataz-security`.
+- **`capataz-conflict-resolver`**: `capataz-fix-conflict`.
+- **`capataz-doc-groomer`**: `capataz-comment-rot`.
+
+For example, from your main session: "spin up capataz-reviewer on this branch".
+
 ### Working one issue
 
 In any Claude session in the repo, run `/capataz-work` on an issue file. It claims the issue, implements it, and resolves it. Ask it for a sanity check and it spawns a fresh-context subagent to check the change against the acceptance criteria before resolving.
@@ -116,12 +125,18 @@ capataz drain --dry-run --repo "$PWD" <feature>        # show the plan, touch no
 
 From each issue's `Touches:` line, capataz derives which ready issues are **parallel-safe** (pairwise-disjoint files, no blocking edge). The drain then loops:
 
-1. Take a parallel-safe wave of `ready-for-agent` issues, up to `--concurrency`.
+1. Take a parallel-safe wave of `ready-for-agent` issues, up to `--concurrency`. An issue with no `Touches:` line could touch anything, so it always runs on its own.
 2. For each, create a herdr worktree on branch `<feature>-NN-slug` (prefix it with `--branch-prefix` or `drain.branch_prefix`), pre-trust it (`capataz trust-dir`), and start a fresh Claude agent running `capataz-work` in it.
 3. Wait for each agent, check it actually committed, and merge its branch back into your base. A conflicting merge starts a `capataz-fix-conflict` agent in the base repo; the drain checks the merge completed before moving on.
 4. Re-scan — issues become eligible as their blockers resolve — and repeat until nothing is left.
 
 Each agent is its own herdr pane, so you can watch or step into any of them.
+
+**Before you drain:**
+
+- **Check out the branch you want the work on.** The drain merges every finished issue into whatever branch your main checkout has checked out, usually a feature branch you created for this work. It never pushes or opens a PR. When the feature is done, push that branch and open the PR yourself.
+- **Start from a clean working tree.** Uncommitted edits in your checkout can make a merge-back fail.
+- **Run it in a herdr pane and leave it there.** The drain is a foreground process, and its log is that pane's output. It exits once nothing is left to dispatch. Running it again is safe: it only picks up `ready-for-agent` issues, so finished and in-progress ones are skipped.
 
 **Questions.** A drain worker that needs a decision from you doesn't ask in chat — nobody reads the drain's chat. It runs `capataz issue ask <issue> "<question>"`, which records the question under the issue's `## Comments` and sets `Status: asking`, then ends its turn. The drain shows a herdr notification with the question and logs the exact command to answer it:
 
@@ -129,7 +144,7 @@ Each agent is its own herdr pane, so you can watch or step into any of them.
 capataz issue answer <issue> "cookies"
 ```
 
-(or tell any Claude session to). The drain picks the answer up within seconds and prompts it into the **same** worker session, which continues where it stopped; a worker may ask more than once. If you move the issue somewhere else instead (`needs-info`, `wontfix`, …), the drain stops waiting and keeps the worktree.
+(or tell any Claude session to). The drain checks for an answer every 15 seconds, then prompts it into the **same** worker session, which continues where it stopped; a worker may ask more than once. If you move the issue somewhere else instead (`needs-info`, `wontfix`, …), the drain stops waiting and keeps the worktree.
 
 **Stalls.** The drain never silently abandons a worker:
 
@@ -138,9 +153,17 @@ capataz issue answer <issue> "cookies"
 - **Timeout** — an agent still running after `--timeout` (default 1h) is notified and left in place, unmerged. Time spent blocked or waiting on an answer doesn't count against it.
 - **Stopped without committing** — an agent that ends its turn with its issue still `claimed` and nothing committed (or uncommitted changes) gets `--resume-grace` (default 3 minutes, out of `--timeout`) to start working again, since Claude Code wakes an agent whose background shell finishes. If it resumes, the drain waits on it as usual. Otherwise it is never cleaned up while its worktree has changes or its issue is still `claimed` (it may have asked in chat anyway — you get a notification for that case). The worktree and branch stay for you.
 
+**When the drain stops on an issue.** The log shows `BLOCKED` or `TIMEOUT` with the reason and the kept worktree. The drain carries on with the other issues and never deletes the kept work. To finish it yourself:
+
+1. Open the worker's pane: in herdr it's the workspace named after the branch. The worker may still be running; if so, let it finish. Otherwise finish the issue in that pane, or answer whatever it is waiting on.
+2. Once the issue is `resolved` and its branch has commits, merge the branch into your base the way the drain would: `git merge --no-ff <feature>-NN-slug`.
+3. Clean up: `herdr worktree remove --workspace <id>`, then `git branch -d <feature>-NN-slug`.
+
+To discard the work instead, set the issue back to `ready-for-agent` (`capataz issue status <issue> ready-for-agent`), remove the worktree and branch, and drain again.
+
 > **⚠️ Parallelism belongs to the drain.** Sessions you start by hand run in the repo's own working tree — two of those on one repo at once can clobber each other. To parallelize, let the drain isolate each agent in its own worktree.
 
-> **Permissions.** Dispatched agents run in Claude Code's default permission mode with `Bash`, `Edit`, `Write`, `Read`, `Glob` and `Grep` pre-allowed; any other permission prompt shows the agent as `blocked` in herdr (see Stalls). `--skip-perms` runs them with `--dangerously-skip-permissions` instead (accept the one-time bypass screen first). A per-project allowlist in your repo's `.claude/settings.json` is a safer way to cut the prompt noise.
+> **Permissions.** Dispatched agents start in *your* Claude Code default permission mode, with `Bash`, `Edit`, `Write`, `Read`, `Glob` and `Grep` pre-allowed. If your default is auto mode, most other tools are approved without asking. Any prompt that does appear shows the agent as `blocked` in herdr (see Stalls). `--skip-perms` runs them with `--dangerously-skip-permissions` instead (accept the one-time bypass screen first). A per-project allowlist in your repo's `.claude/settings.json` is a safer way to cut the prompt noise.
 
 ### The review loop
 
@@ -163,7 +186,7 @@ capataz issue waves <feature> --json                # the parallel-safe dispatch
 
 ## Requirements
 
-- **[herdr](https://herdr.dev) ≥ 0.8.0**, with its Claude integration installed: `herdr integration install claude`. The drain waits on herdr's agent state, so **without the integration the drain hangs**.
+- **[herdr](https://herdr.dev) ≥ 0.9.5** (the version the drain is tested against), with its Claude integration installed: `herdr integration install claude`. The drain waits on herdr's agent state, so **without the integration the drain hangs**.
 - **Claude Code**
 - **Go 1.26+** to build
 - **macOS** for the plan-usage gauge (it reads the Keychain). Everything else also runs on Linux.
@@ -187,7 +210,19 @@ herdr server reload-config
 herdr plugin list          # should show bmena34.capataz enabled
 ```
 
-`herdr plugin install` runs the build step itself; after `herdr plugin link`, run it by hand (and again after pulling changes).
+`herdr plugin install` runs the build step itself; after `herdr plugin link`, run it by hand.
+
+### Updating
+
+After `git pull`, refresh all three copies:
+
+```sh
+make install               # the capataz on your PATH, which workers call for `capataz issue …`
+capataz install            # the skills and agents in ~/.claude, which workers follow
+sh scripts/build.sh        # ./bin/capataz, which the herdr plugin runs
+```
+
+Skipping one leaves part of capataz on the old version. `capataz drain` and its workers' `capataz issue` calls come from your PATH, workers follow the installed skills, and the herdr popups and sidebar run `./bin/capataz`.
 
 ### Keybinds
 
@@ -210,6 +245,21 @@ description = "capataz: usage & context"
 ```
 
 Or invoke them directly: `herdr plugin action invoke issues` / `herdr plugin action invoke usage`.
+
+## Your first feature
+
+The whole loop, start to finish, in a repo open in herdr:
+
+1. **Plan.** In a Claude session in the repo, run `/capataz-start` and describe the idea. It asks questions until the scope is clear, then writes `.scratch/<feature>/plan.md`.
+2. **Split.** Let it hand off to `/capataz-splitter`, or run that yourself. It proposes vertical-slice issues with `Touches:` and `Blocked by:` and publishes them once you agree. `capataz issues` (or `prefix+i`) shows them.
+3. **Triage.** If anything landed as `needs-triage` or `needs-info`, run `/capataz-triage`.
+4. **Branch.** Check out a branch for the feature (`git checkout -b <feature>`) with a clean working tree. The drain merges into this branch.
+5. **Preview the drain.** `capataz drain --dry-run --repo "$PWD" <feature>` shows the first wave without touching anything.
+6. **Drain.** In a herdr pane: `capataz drain --repo "$PWD" <feature>`. Answer questions as notifications arrive (`capataz issue answer …`). If an issue stops, see [When the drain stops on an issue](#the-drain).
+7. **Review.** In a **fresh** Claude session, run `/capataz-review`, plus `/capataz-security` if the change warrants it. Findings become issues. Triage them, drain again, and repeat until a review comes back clean.
+8. **Ship.** Optionally run `/capataz-comment-rot` for a docs pass, then push the branch and open the PR.
+
+For a single small change, skip the drain: run `/capataz-work` on one issue in your session.
 
 ## The herdr plugin
 
