@@ -209,7 +209,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 			logf("drain: [%s] cannot inspect worktree %s (%v) — keeping it", iss.Number, checkoutPath, derr)
 			return fail("error", fmt.Errorf("%w (worktree %s kept: dirty check failed: %v)", cause, checkoutPath, derr))
 		}
-		st, serr := runner.IssueStatus(iss.Path)
+		st, serr := issueStatus(runner, iss.Path)
 		if serr != nil {
 			logf("drain: [%s] cannot read issue status (%v) — keeping worktree %s", iss.Number, serr, checkoutPath)
 			return fail("error", fmt.Errorf("%w (worktree %s kept: status read failed: %v)", cause, checkoutPath, serr))
@@ -482,7 +482,7 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, ans
 
 	for normStatus(st) == issues.StatusAsking {
 		cfg.sleep(cfg.askPoll)
-		if st, err = runner.IssueStatus(iss.Path); err != nil {
+		if st, err = issueStatus(runner, iss.Path); err != nil {
 			logf("drain: [%s] cannot read issue status (%v) — still waiting", iss.Number, err)
 			st = issues.StatusAsking
 		}
@@ -525,6 +525,17 @@ func answerPrompt(runner Runner, iss WaveIssue, answer string, delivered, n int,
 	}
 	b.WriteString("Continue the issue.")
 	return b.String()
+}
+
+// issueStatus is runner.IssueStatus with an empty status (a torn read of an
+// issue file mid-rewrite) reported as an error, so callers treat it as
+// transient instead of as a move out of the status they're watching.
+func issueStatus(runner Runner, path string) (string, error) {
+	st, err := runner.IssueStatus(path)
+	if err == nil && normStatus(st) == "" {
+		err = fmt.Errorf("%s: empty status", path)
+	}
+	return st, err
 }
 
 // defaultResumeGraceMS is the awaitResume window when cfg.ResumeGraceMS is unset.

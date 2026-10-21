@@ -213,6 +213,29 @@ func TestDrain_OldAnswerNotRedelivered(t *testing.T) {
 	}
 }
 
+// A torn read mid-answer (status "") keeps the asking wait going rather than
+// ending the dispatch and dropping the answer.
+func TestDrain_AskingSurvivesTornStatusRead(t *testing.T) {
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		issueStatusSeq: map[string][]string{askPath: {"asking", "", "claimed"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"cookies", 1}}},
+		clock:          clock,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	got := answerPrompts(runner.calls)
+	if len(got) != 1 || !strings.Contains(got[0], "answered: cookies") {
+		t.Errorf("answer prompts = %q\n%s", got, out)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1\n%s", n, out)
+	}
+}
+
 func TestDrain_AskingTimeExcludedFromTimeout(t *testing.T) {
 	clock := &fakeClock{}
 	runner := &fakeRunner{
