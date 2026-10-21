@@ -114,7 +114,7 @@ func usage() {
 
 usage:
   capataz issues [dir]        full-screen backlog viewer for the repo at dir (default cwd)
-  capataz issue …             manage the .scratch backlog: claim/resolve/status/comment/list/new/waves (used by skills)
+  capataz issue …             manage the .scratch backlog: claim/resolve/status/comment/ask/answer/list/new/waves (used by skills)
   capataz drain [flags] <f>   drain feature f's backlog: dispatch parallel-safe waves of agents via herdr
   capataz usage               print the plan-usage gauge (reads Keychain token; unofficial endpoint)
   capataz usage-view [flags]  live plan-usage + per-agent context popup (herdr usage pane)

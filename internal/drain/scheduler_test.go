@@ -252,6 +252,37 @@ func TestDrain_DryRun(t *testing.T) {
 	if !strings.Contains(output, "herdr worktree create") {
 		t.Errorf("dry-run output missing 'herdr worktree create': %s", output)
 	}
+	// The wait and resume-grace lines must match what the runner executes.
+	for _, want := range []string{
+		"herdr agent wait drain-f-01 --until done --until idle --until blocked --timeout 5000",
+		"herdr agent wait drain-f-01 --until working --until blocked --timeout 180000",
+		"herdr agent list",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("dry-run output missing %q: %s", want, output)
+		}
+	}
+}
+
+func TestDryRun_ResumeGraceFromConfig(t *testing.T) {
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{twoIssueWave("f")},
+	}
+	var out strings.Builder
+	cfg := Config{
+		Feature:        "f",
+		AgentTimeoutMS: 5000,
+		ResumeGraceMS:  42000,
+		RepoPath:       "/repo",
+		DryRun:         true,
+		Out:            &out,
+	}
+	if err := Drain(cfg, runner); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "--until working --until blocked --timeout 42000"; !strings.Contains(out.String(), want) {
+		t.Errorf("dry-run output missing %q: %s", want, out.String())
+	}
 }
 
 func TestDrain_SkipPermissionsFlag(t *testing.T) {
