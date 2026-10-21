@@ -32,6 +32,12 @@ type fakeRunner struct {
 	// Absent/nil → default 1 (the agent produced work).
 	commitsAhead map[string]int
 
+	// commitsAheadErr, when set, is returned by every CommitsAhead call.
+	commitsAheadErr error
+
+	// agentWaitErr maps agent name -> error returned by AgentWait.
+	agentWaitErr map[string]error
+
 	// mergeUnresolved makes MergeResolved return false (fix-conflict agent
 	// reported done but the merge is still conflicted).
 	mergeUnresolved bool
@@ -91,6 +97,9 @@ func (f *fakeRunner) Waves(feature, repo string) ([]byte, error) {
 
 func (f *fakeRunner) CommitsAhead(repo, branch string) (int, error) {
 	f.record("CommitsAhead", repo, branch)
+	if f.commitsAheadErr != nil {
+		return 0, f.commitsAheadErr
+	}
 	if f.commitsAhead != nil {
 		if n, ok := f.commitsAhead[branch]; ok {
 			return n, nil
@@ -212,6 +221,9 @@ func (f *fakeRunner) AgentWait(target string, timeoutMS int) (string, error) {
 	f.record("AgentWait", target, strconv.Itoa(timeoutMS))
 	if f.clock != nil {
 		f.clock.advance(f.waitElapsed)
+	}
+	if err := f.agentWaitErr[target]; err != nil {
+		return "", err
 	}
 	if s, ok := f.pop(f.agentWaitSeq, target); ok {
 		return s, nil
