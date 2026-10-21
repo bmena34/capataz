@@ -199,10 +199,10 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	var paneID string
 
 	// After the agent has run, the worktree may hold work that exists nowhere
-	// else (uncommitted edits, a needs-info question, or a question asked in
-	// chat). failSafe never tears that down: it returns a blocked result and
-	// keeps worktree + branch. Only a clean worktree on an issue the agent never
-	// claimed falls through to failClean.
+	// else (uncommitted edits, unmerged commits, an open question, or a question
+	// asked in chat). failSafe never tears that down: it returns a blocked result
+	// and keeps worktree + branch. Only a clean worktree with no commits ahead,
+	// on an issue the agent never claimed, falls through to failClean.
 	failSafe := func(status string, cause error) IssueResult {
 		dirty, derr := runner.WorktreeDirty(checkoutPath)
 		if derr != nil {
@@ -216,7 +216,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		}
 		st = normStatus(st)
 		switch {
-		case st == issues.StatusNeedsInfo || st == issues.StatusReadyForHuman:
+		case st == issues.StatusNeedsInfo || st == issues.StatusReadyForHuman || st == issues.StatusAsking:
 			logf("drain: [%s] issue is %s — it needs an answer; keeping worktree %s and branch %s", iss.Number, st, checkoutPath, iss.Branch)
 			return fail("blocked", fmt.Errorf("issue is %s and needs an answer; worktree kept at %s", st, checkoutPath))
 		case dirty:
@@ -228,7 +228,16 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 			if err := runner.Notify(title, fmt.Sprintf("Agent %s may have asked in chat — check pane %s.", agentName, paneID)); err != nil {
 				logf("drain: [%s] notification failed: %v", iss.Number, err)
 			}
-			return fail("blocked", fmt.Errorf("issue still claimed with no commits (%v); agent may have asked in chat — pane %s, worktree kept at %s", cause, paneID, checkoutPath))
+			return fail("blocked", fmt.Errorf("issue still claimed (%v); agent may have asked in chat — pane %s, worktree kept at %s", cause, paneID, checkoutPath))
+		}
+		ahead, aerr := runner.CommitsAhead(cfg.RepoPath, iss.Branch)
+		if aerr != nil {
+			logf("drain: [%s] cannot count commits on %s (%v) — keeping worktree %s and branch", iss.Number, iss.Branch, aerr, checkoutPath)
+			return fail("blocked", fmt.Errorf("%w (branch %s kept: commit check failed: %v; worktree at %s)", cause, iss.Branch, aerr, checkoutPath))
+		}
+		if ahead > 0 {
+			logf("drain: [%s] branch %s has %d unmerged commit(s) — keeping it and worktree %s", iss.Number, iss.Branch, ahead, checkoutPath)
+			return fail("blocked", fmt.Errorf("%w (branch %s has %d unmerged commit(s); kept, worktree at %s)", cause, iss.Branch, ahead, checkoutPath))
 		}
 		return failClean(status, cause)
 	}

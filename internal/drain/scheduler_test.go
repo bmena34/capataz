@@ -1,6 +1,7 @@
 package drain
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -397,6 +398,68 @@ func TestDispatchOne_ZeroCommitsCleanUnclaimedCleansUp(t *testing.T) {
 	}
 	if n := countCalls(r.calls, "Notify"); n != 0 {
 		t.Errorf("Notify calls = %d, want 0", n)
+	}
+}
+
+// failSafeCase runs dispatchOne with a clean worktree and the given issue
+// status, letting the caller shape the fake (wait error, commits, ...).
+func failSafeCase(t *testing.T, status string, setup func(*fakeRunner)) (IssueResult, *fakeRunner, string) {
+	t.Helper()
+	const branch = "capataz/f-01-a"
+	const path = "/repo/.scratch/f/issues/01-a.md"
+	runner := &fakeRunner{issueStatus: map[string]string{path: status}}
+	setup(runner)
+	cfg := Config{Feature: "f", AgentTimeoutMS: 5000, RepoPath: "/repo", Out: &strings.Builder{}}
+	iss := WaveIssue{Number: "01", Path: path, Feature: "f", Status: "ready-for-agent", Branch: branch}
+	var log strings.Builder
+	res := dispatchOne(cfg, runner, iss, func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) }, &sync.Mutex{})
+	return res, runner, log.String()
+}
+
+// A worker that committed and resolved before herdr's wait errored must not
+// lose its branch: committed-but-unmerged work is unlanded work.
+func TestDispatchOne_WaitErrorResolvedWithCommitsKept(t *testing.T) {
+	res, r, log := failSafeCase(t, "resolved", func(f *fakeRunner) {
+		f.agentWaitErr = map[string]error{"drain-f-01": errors.New("herdr: boom")}
+		f.commitsAhead = map[string]int{"capataz/f-01-a": 1}
+	})
+	assertKept(t, res, r)
+	if !strings.Contains(res.Err.Error(), "capataz/f-01-a") {
+		t.Errorf("error should name the branch; got %v", res.Err)
+	}
+	if !strings.Contains(log, "unmerged commit") {
+		t.Errorf("log should mention unmerged commits; got:\n%s", log)
+	}
+}
+
+func TestDispatchOne_WaitErrorCommitsAheadErrorKept(t *testing.T) {
+	res, r, _ := failSafeCase(t, "resolved", func(f *fakeRunner) {
+		f.agentWaitErr = map[string]error{"drain-f-01": errors.New("herdr: boom")}
+		f.commitsAheadErr = errors.New("git: bad ref")
+	})
+	assertKept(t, res, r)
+	if !strings.Contains(res.Err.Error(), "capataz/f-01-a") {
+		t.Errorf("error should name the branch; got %v", res.Err)
+	}
+}
+
+func TestDispatchOne_CommitsAheadErrorKept(t *testing.T) {
+	res, r, _ := failSafeCase(t, "resolved", func(f *fakeRunner) {
+		f.commitsAheadErr = errors.New("git: bad ref")
+	})
+	assertKept(t, res, r)
+}
+
+// An agent that asked and then lost its wait still has an open question; its
+// worktree and branch must survive for the answer.
+func TestDispatchOne_WaitErrorAskingKept(t *testing.T) {
+	res, r, log := failSafeCase(t, "asking", func(f *fakeRunner) {
+		f.agentWaitErr = map[string]error{"drain-f-01": errors.New("herdr: boom")}
+		f.commitsAhead = map[string]int{"capataz/f-01-a": 0}
+	})
+	assertKept(t, res, r)
+	if !strings.Contains(log, "needs an answer") {
+		t.Errorf("log should say it needs an answer; got:\n%s", log)
 	}
 }
 
