@@ -138,6 +138,8 @@ capataz issue new  <feature> "<title>" --body "…"   # file a new issue
 capataz issue claim   .scratch/f/issues/01-x.md
 capataz issue resolve .scratch/f/issues/01-x.md --answer "what shipped"
 capataz issue comment .scratch/f/issues/01-x.md "a note under ## Comments"
+capataz issue ask     .scratch/f/issues/01-x.md "a question"   # Status: asking
+capataz issue answer  .scratch/f/issues/01-x.md "the answer"   # back to claimed; prints the answer
 capataz issue waves <feature> --json                # the parallel-safe dispatch plan
 ```
 
@@ -233,7 +235,7 @@ Optional, at `~/.config/capataz/config.json` (created by `capataz install`; `cap
 
 ```
 capataz issues [dir]          backlog viewer for the repo at dir (default cwd)
-capataz issue …               claim/resolve/status/comment/list/new/waves (used by skills)
+capataz issue …               claim/resolve/status/comment/ask/answer/list/new/waves (used by skills)
 capataz drain [flags] <f>     drain feature f's backlog with parallel herdr agents
 capataz usage                 print the plan-usage gauge
 capataz usage-view [flags]    live plan-usage + per-agent context view

@@ -474,6 +474,7 @@ func TestStatusVocabularySingleSource(t *testing.T) {
 		{StatusReadyForHuman, BucketTodo, "HUMAN"},
 		{StatusNeedsInfo, BucketTodo, "NEEDS-INFO"},
 		{StatusClaimed, BucketDoing, "CLAIMED"},
+		{StatusAsking, BucketDoing, "ASKING"},
 		{StatusResolved, BucketDone, "DONE"},
 		{StatusDone, BucketDone, "DONE"},
 		{StatusClosed, BucketDone, "DONE"},

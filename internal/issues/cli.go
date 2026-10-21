@@ -22,6 +22,8 @@ import (
 //	capataz issue resolve <path> [--answer …] set Status: resolved (+ optional answer)
 //	capataz issue status  <path> <status>     set Status: <status>
 //	capataz issue comment <path> <text>       append a note under ## Comments
+//	capataz issue ask     <path> <question>   record a question, set Status: asking
+//	capataz issue answer  <path> <answer>     answer an asking issue, set Status: claimed
 //	capataz issue list    <repo>              print the backlog for a repo
 //	capataz issue new     <feature> <title> [--body … --type … --repo …]
 func Run(args []string) error {
@@ -64,6 +66,16 @@ func Run(args []string) error {
 			return usageErr()
 		}
 		return commentCLI(args[1], strings.Join(args[2:], " "))
+	case "ask":
+		if len(args) < 3 {
+			return usageErr()
+		}
+		return askCLI(args[1], strings.Join(args[2:], " "))
+	case "answer":
+		if len(args) < 3 {
+			return usageErr()
+		}
+		return answerCLI(args[1], strings.Join(args[2:], " "))
 	case "list":
 		repo := "."
 		if len(args) > 1 {
@@ -224,8 +236,8 @@ func lockFeature(dir string) func() {
 	return func() {} // gave up waiting; proceed unlocked (degrade, don't hang)
 }
 
-// lockClaim serializes concurrent `issue claim` calls against a single issue
-// file. Same O_EXCL best-effort scheme as lockFeature, but keyed on the issue
+// lockClaim serializes the read-check-write commands (claim, ask, answer)
+// against a single issue file. Same O_EXCL best-effort scheme as lockFeature, but keyed on the issue
 // FILE (<path>.capataz-claim.lock) rather than the feature dir, so it gates the
 // per-file compare-and-set without blocking claims of unrelated issues. The lock
 // file is not a .md and is ignored by Scan/parseIssue.
@@ -296,22 +308,109 @@ func commentCLI(path, text string) error {
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("issue file not found: %s", path)
 	}
+	if err := appendComment(path, text); err != nil {
+		return err
+	}
+	fmt.Printf("%s → comment added\n", path)
+	return nil
+}
+
+// appendComment adds text under the "## Comments" section (assumed last),
+// starting one if absent.
+func appendComment(path, text string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	s := strings.TrimRight(string(data), "\n")
-	// Append under an existing Comments section (assumed last), else start one.
 	if strings.HasPrefix(s, "## Comments") || strings.Contains(s, "\n## Comments") {
 		s += "\n\n" + strings.TrimSpace(text) + "\n"
 	} else {
 		s += "\n\n## Comments\n\n" + strings.TrimSpace(text) + "\n"
 	}
-	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+	return os.WriteFile(path, []byte(s), 0o644)
+}
+
+// Markers that open a question or answer comment. LatestAnswer parses them
+// back, so changing one is a format change.
+const (
+	questionMarker = "**Question (agent):**"
+	answerMarker   = "**Answer (operator):**"
+)
+
+// askCLI records a worker's question for the operator as a comment and parks
+// the issue in Status: asking (bucket doing, so waves never re-dispatches it).
+// It runs under the per-file lock so it can't interleave with an answer.
+func askCLI(path, question string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("issue file not found: %s", path)
+	}
+	unlock := lockClaim(path)
+	defer unlock()
+
+	if err := appendComment(path, questionMarker+" "+strings.TrimSpace(question)); err != nil {
 		return err
 	}
-	fmt.Printf("%s → comment added\n", path)
+	if err := SetStatus(path, StatusAsking); err != nil {
+		return err
+	}
+	fmt.Printf("%s → Status: %s\n", path, StatusAsking)
 	return nil
+}
+
+// answerCLI records the operator's answer and returns the issue to claimed. It
+// is a compare-and-set like claim: only an asking issue can be answered, and the
+// status is re-read inside the per-file lock. The answer text alone goes to
+// stdout so the drain can read it back.
+func answerCLI(path, answer string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("issue file not found: %s", path)
+	}
+	unlock := lockClaim(path)
+	defer unlock()
+
+	if status := normStatus(readStatus(path)); status != StatusAsking {
+		if status == "" {
+			status = "(none)"
+		}
+		return fmt.Errorf("%s not asking: %s", path, status)
+	}
+	answer = strings.TrimSpace(answer)
+	if err := appendComment(path, answerMarker+" "+answer); err != nil {
+		return err
+	}
+	if err := SetStatus(path, StatusClaimed); err != nil {
+		return err
+	}
+	fmt.Println(answer)
+	return nil
+}
+
+// LatestAnswer returns the text of the last operator answer recorded on an
+// issue file, and false if there is none. An answer runs from its marker to the
+// next question/answer marker or "## " heading.
+func LatestAnswer(path string) (string, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, err
+	}
+	var cur []string
+	found, in := false, false
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.HasPrefix(line, answerMarker):
+			cur = []string{strings.TrimPrefix(line, answerMarker)}
+			found, in = true, true
+		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, "## "):
+			in = false
+		case in:
+			cur = append(cur, line)
+		}
+	}
+	if !found {
+		return "", false, nil
+	}
+	return strings.TrimSpace(strings.Join(cur, "\n")), true, nil
 }
 
 // appendSection appends "## <heading>\n\n<body>" to a file, adding a leading
@@ -495,5 +594,5 @@ func hasFlag(args []string, name string) bool {
 }
 
 func usageErr() error {
-	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|list|new|waves> <path|feature> [args]")
+	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|ask|answer|list|new|waves> <path|feature> [args]")
 }

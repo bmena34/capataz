@@ -56,6 +56,23 @@ func TestIssueViewEmptyBacklog(t *testing.T) {
 	}
 }
 
+// TestAskingBadge: asking has its own label and color, not the unknown-status
+// fallback.
+func TestAskingBadge(t *testing.T) {
+	label, color := issueBadgeParts(issues.StatusAsking)
+	if label != "ASKING" {
+		t.Errorf("label = %q, want ASKING", label)
+	}
+	if _, fallback := issueBadgeParts("mid-review"); color == fallback {
+		t.Errorf("asking renders with the unknown-status fallback color")
+	}
+	list := []issues.Issue{{Feature: "alpha", Num: "01", Title: "Q", Status: issues.StatusAsking}}
+	m := issueViewModel{repo: "/tmp/x", repoName: "x", list: list, w: 80, h: 24}
+	if out := m.View(); !strings.Contains(out, "ASKING") {
+		t.Errorf("view missing ASKING badge\n---\n%s", out)
+	}
+}
+
 // TestIssueViewClamp guards cursor navigation bounds across loads.
 func TestIssueViewClamp(t *testing.T) {
 	m := issueViewModel{list: sampleIssueList()}

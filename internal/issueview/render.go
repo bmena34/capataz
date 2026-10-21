@@ -228,6 +228,8 @@ func statusColor(status string) lipgloss.Color {
 		return lipgloss.Color("240") // dim
 	case issues.StatusNeedsInfo:
 		return lipgloss.Color("208") // orange
+	case issues.StatusAsking:
+		return lipgloss.Color("201") // magenta: waiting on the operator
 	case issues.StatusReadyForHuman:
 		return lipgloss.Color("39") // cyan
 	default: // StatusNeedsTriage and any other known status without a distinct color
