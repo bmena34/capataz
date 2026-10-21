@@ -114,8 +114,8 @@ func (f *fakeRunner) WorktreeDirty(path string) (bool, error) {
 	return f.dirtyWorktrees[path], nil
 }
 
-func (f *fakeRunner) IssueStatus(repo, path string) (string, error) {
-	f.record("IssueStatus", repo, path)
+func (f *fakeRunner) IssueStatus(path string) (string, error) {
+	f.record("IssueStatus", path)
 	f.mu.Lock()
 	if seq := f.issueStatusSeq[path]; len(seq) > 0 {
 		f.issueStatusSeq[path] = seq[1:]
