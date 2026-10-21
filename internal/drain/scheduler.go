@@ -441,7 +441,7 @@ type askFailure struct {
 // until it leaves `asking`, and, if the operator answered (back to `claimed`),
 // prompts the same agent with the answer. If the issue is already `claimed` but
 // holds more answers than *answered, the operator answered before the agent
-// ended its turn: that answer is delivered the same way. *answered tracks the
+// ended its turn: those answers are delivered the same way. *answered tracks the
 // answers delivered (-1: unknown). delivered=false means no answer was pending
 // — carry on to commit verification. Any other status the issue moves to from
 // `asking` ends the dispatch.
@@ -464,8 +464,9 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, ans
 			return false, nil
 		}
 		logf("drain: [%s] the question was answered before agent %s ended its turn", iss.Number, agentName)
+		prompt := answerPrompt(runner, iss, answer, *answered, n, logf)
 		*answered = n
-		return deliverAnswer(cfg, runner, iss, agentName, answer, logf)
+		return deliverAnswer(cfg, runner, iss, agentName, prompt, logf)
 	}
 
 	question, err := runner.IssueQuestion(iss.Path)
@@ -496,10 +497,34 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, ans
 	if err != nil {
 		return false, &askFailure{"error", fmt.Errorf("read answer: %w", err)}
 	}
+	prompt := answerPrompt(runner, iss, answer, *answered, n, logf)
 	if *answered >= 0 {
 		*answered = n
 	}
-	return deliverAnswer(cfg, runner, iss, agentName, answer, logf)
+	return deliverAnswer(cfg, runner, iss, agentName, prompt, logf)
+}
+
+// answerPrompt is the prompt that hands the agent the operator's answer. When
+// more than one answer landed since the last delivery (the agent asked, kept
+// working, then asked again before ending its turn), it lists every undelivered
+// answer with its question; otherwise, or if those can't be read, just answer.
+func answerPrompt(runner Runner, iss WaveIssue, answer string, delivered, n int, logf func(string, ...any)) string {
+	single := fmt.Sprintf("Your question on %s was answered: %s. Continue the issue.", iss.Path, answer)
+	if delivered < 0 || n-delivered < 2 {
+		return single
+	}
+	ex, err := runner.IssueExchanges(iss.Path)
+	if err != nil || len(ex) < n {
+		logf("drain: [%s] cannot read the earlier answers (%v, %d of %d) — delivering only the latest", iss.Number, err, len(ex), n)
+		return single
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Your questions on %s were answered:\n", iss.Path)
+	for i, e := range ex[delivered:n] {
+		fmt.Fprintf(&b, "%d. Q: %s\n   A: %s\n", i+1, e.Question, e.Answer)
+	}
+	b.WriteString("Continue the issue.")
+	return b.String()
 }
 
 // defaultResumeGraceMS is the awaitResume window when cfg.ResumeGraceMS is unset.
@@ -573,18 +598,17 @@ const (
 	resumePoll    = 500 * time.Millisecond
 )
 
-// deliverAnswer prompts agentName with the operator's answer and confirms it
+// deliverAnswer prompts agentName with the answer prompt and confirms it
 // started a new turn, retrying a dropped prompt. The agent is still in the done
 // state of the turn that asked, which `herdr agent wait` would match at once,
 // so a new turn means it is working or blocked, or its completion_seq moved
 // past the one read before the prompt.
-func deliverAnswer(cfg Config, runner Runner, iss WaveIssue, agentName, answer string, logf func(string, ...any)) (bool, *askFailure) {
+func deliverAnswer(cfg Config, runner Runner, iss WaveIssue, agentName, prompt string, logf func(string, ...any)) (bool, *askFailure) {
 	logf("drain: [%s] delivering answer to agent %s", iss.Number, agentName)
 	_, seq, err := runner.AgentTurn(agentName)
 	if err != nil {
 		return false, &askFailure{"error", fmt.Errorf("read agent state: %w", err)}
 	}
-	prompt := fmt.Sprintf("Your question on %s was answered: %s. Continue the issue.", iss.Path, answer)
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := runner.AgentPrompt(agentName, prompt); err != nil {
 			return false, &askFailure{"error", fmt.Errorf("deliver answer: %w", err)}

@@ -435,6 +435,53 @@ func latestEntry(path, marker string) (string, int, error) {
 	return strings.TrimSpace(strings.Join(cur, "\n")), n, nil
 }
 
+// Exchange is one operator answer and the agent question(s) it answers: every
+// question asked since the previous answer, joined by newlines.
+type Exchange struct {
+	Question string
+	Answer   string
+}
+
+// Exchanges returns one Exchange per operator answer on an issue file, in file
+// order, so len(result) matches the count LatestAnswer reports.
+func Exchanges(path string) ([]Exchange, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []Exchange
+	var questions, cur []string
+	kind := ""
+	flush := func() {
+		text := strings.TrimSpace(strings.Join(cur, "\n"))
+		switch kind {
+		case questionMarker:
+			questions = append(questions, text)
+		case answerMarker:
+			out = append(out, Exchange{Question: strings.Join(questions, "\n"), Answer: text})
+			questions = nil
+		}
+		kind, cur = "", nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, answerMarker):
+			flush()
+			kind = questionMarker
+			if strings.HasPrefix(line, answerMarker) {
+				kind = answerMarker
+			}
+			cur = []string{strings.TrimPrefix(line, kind)}
+		case strings.HasPrefix(line, "## "):
+			flush()
+		case kind != "":
+			cur = append(cur, line)
+		}
+	}
+	flush()
+	return out, nil
+}
+
 // appendSection appends "## <heading>\n\n<body>" to a file, adding a leading
 // blank line so it doesn't run into whatever came before.
 func appendSection(path, heading, body string) error {

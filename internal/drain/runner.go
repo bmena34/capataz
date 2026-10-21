@@ -54,6 +54,11 @@ type Runner interface {
 	IssueQuestion(path string) (string, error)
 	IssueAnswer(path string) (string, int, error)
 
+	// IssueExchanges returns every operator answer on the issue file, each with
+	// the question(s) it answers, in order — so the drain can deliver several
+	// answers that piled up while the agent was still in its turn.
+	IssueExchanges(path string) ([]issues.Exchange, error)
+
 	// Notify raises an operator notification (`herdr notification show`).
 	Notify(title, body string) error
 
@@ -229,6 +234,10 @@ func (r *realRunner) IssueQuestion(path string) (string, error) {
 
 func (r *realRunner) IssueAnswer(path string) (string, int, error) {
 	return issues.LatestAnswer(path)
+}
+
+func (r *realRunner) IssueExchanges(path string) ([]issues.Exchange, error) {
+	return issues.Exchanges(path)
 }
 
 func (r *realRunner) Notify(title, body string) error {

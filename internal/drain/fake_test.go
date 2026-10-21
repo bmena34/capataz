@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/bmena34/capataz/internal/issues"
 )
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,9 @@ type fakeRunner struct {
 	// answers maps issue path -> successive IssueAnswer results (last repeats;
 	// absent = no answers). The drain reads one before starting the agent.
 	answers map[string][]fakeAnswer
+
+	// exchanges maps issue path -> IssueExchanges result (absent = none).
+	exchanges map[string][]issues.Exchange
 
 	// agentWaitSeq maps agent name -> successive AgentWait results, consumed one
 	// per call; when exhausted, agentWaitStatus (or "done") applies.
@@ -185,6 +190,11 @@ func (f *fakeRunner) IssueAnswer(path string) (string, int, error) {
 		f.answers[path] = seq[1:]
 	}
 	return seq[0].text, seq[0].n, nil
+}
+
+func (f *fakeRunner) IssueExchanges(path string) ([]issues.Exchange, error) {
+	f.record("IssueExchanges", path)
+	return f.exchanges[path], nil
 }
 
 func (f *fakeRunner) Notify(title, body string) error {

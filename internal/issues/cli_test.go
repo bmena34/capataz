@@ -90,6 +90,25 @@ func TestAskAnswerRoundTrip(t *testing.T) {
 	if got, n, err := LatestQuestion(path); err != nil || n != 2 || got != "And the column?" {
 		t.Errorf("LatestQuestion = %q, %d, %v, want %q", got, n, err, "And the column?")
 	}
+
+	// A question asked twice before one answer pairs both with that answer.
+	captureStdout(t, func() error { return askCLI(path, "Index?") })
+	captureStdout(t, func() error { return askCLI(path, "Unique?") })
+	captureStdout(t, func() error { return answerCLI(path, "yes") })
+	ex, err := Exchanges(path)
+	want := []Exchange{
+		{"Which table?", "the users table"},
+		{"And the column?", "email"},
+		{"Index?\nUnique?", "yes"},
+	}
+	if err != nil || len(ex) != len(want) {
+		t.Fatalf("Exchanges = %q, %v", ex, err)
+	}
+	for i := range want {
+		if ex[i] != want[i] {
+			t.Errorf("Exchanges[%d] = %q, want %q", i, ex[i], want[i])
+		}
+	}
 }
 
 func TestAnswerRefusesWhenNotAsking(t *testing.T) {
