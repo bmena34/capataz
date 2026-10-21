@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bmena34/capataz/internal/config"
 	"github.com/bmena34/capataz/internal/worktree"
 )
 
@@ -21,6 +22,8 @@ import (
 //	capataz issue resolve <path> [--answer …] set Status: resolved (+ optional answer)
 //	capataz issue status  <path> <status>     set Status: <status>
 //	capataz issue comment <path> <text>       append a note under ## Comments
+//	capataz issue ask     <path> <question>   record a question, set Status: asking
+//	capataz issue answer  <path> <answer>     answer an asking issue, set Status: claimed
 //	capataz issue list    <repo>              print the backlog for a repo
 //	capataz issue new     <feature> <title> [--body … --type … --repo …]
 func Run(args []string) error {
@@ -63,6 +66,16 @@ func Run(args []string) error {
 			return usageErr()
 		}
 		return commentCLI(args[1], strings.Join(args[2:], " "))
+	case "ask":
+		if len(args) < 3 {
+			return usageErr()
+		}
+		return askCLI(args[1], strings.Join(args[2:], " "))
+	case "answer":
+		if len(args) < 3 {
+			return usageErr()
+		}
+		return answerCLI(args[1], strings.Join(args[2:], " "))
 	case "list":
 		repo := "."
 		if len(args) > 1 {
@@ -76,7 +89,7 @@ func Run(args []string) error {
 		if !hasFlag(args[2:], "--json") {
 			return fmt.Errorf("waves: --json flag is required")
 		}
-		return wavesJSON(args[1])
+		return wavesJSON(args[1], args[2:])
 	default:
 		return usageErr()
 	}
@@ -140,6 +153,21 @@ func claimCLI(path string, force bool) error {
 // treated as not-claimable rather than silently claimed.
 func readStatus(path string) string {
 	return parseIssue(path, "").Status
+}
+
+// ReadStatus is readStatus for callers that hold an issue's absolute path (the
+// drain): it reads the file directly rather than scanning a backlog root. It
+// errors when the file can't be read or has no Status line, so a caller can
+// treat a torn or truncated read as transient rather than as a status change.
+func ReadStatus(path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	st := readStatus(path)
+	if st == "" {
+		return "", fmt.Errorf("%s: no Status line", path)
+	}
+	return st, nil
 }
 
 // create writes a new ready-for-agent issue at .scratch/<feature>/issues/NN-slug.md,
@@ -223,8 +251,8 @@ func lockFeature(dir string) func() {
 	return func() {} // gave up waiting; proceed unlocked (degrade, don't hang)
 }
 
-// lockClaim serializes concurrent `issue claim` calls against a single issue
-// file. Same O_EXCL best-effort scheme as lockFeature, but keyed on the issue
+// lockClaim serializes the read-check-write commands (claim, ask, answer)
+// against a single issue file. Same O_EXCL best-effort scheme as lockFeature, but keyed on the issue
 // FILE (<path>.capataz-claim.lock) rather than the feature dir, so it gates the
 // per-file compare-and-set without blocking claims of unrelated issues. The lock
 // file is not a .md and is ignored by Scan/parseIssue.
@@ -295,22 +323,168 @@ func commentCLI(path, text string) error {
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("issue file not found: %s", path)
 	}
+	if err := appendComment(path, text); err != nil {
+		return err
+	}
+	fmt.Printf("%s → comment added\n", path)
+	return nil
+}
+
+// appendComment adds text under the "## Comments" section (assumed last),
+// starting one if absent.
+func appendComment(path, text string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	s := strings.TrimRight(string(data), "\n")
-	// Append under an existing Comments section (assumed last), else start one.
 	if strings.HasPrefix(s, "## Comments") || strings.Contains(s, "\n## Comments") {
 		s += "\n\n" + strings.TrimSpace(text) + "\n"
 	} else {
 		s += "\n\n## Comments\n\n" + strings.TrimSpace(text) + "\n"
 	}
-	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+	return writeFileAtomic(path, []byte(s))
+}
+
+// Markers that open a question or answer comment. LatestAnswer parses them
+// back, so changing one is a format change.
+const (
+	questionMarker = "**Question (agent):**"
+	answerMarker   = "**Answer (operator):**"
+)
+
+// askCLI records a worker's question for the operator as a comment and parks
+// the issue in Status: asking (bucket doing, so waves never re-dispatches it).
+// It runs under the per-file lock so it can't interleave with an answer.
+func askCLI(path, question string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("issue file not found: %s", path)
+	}
+	unlock := lockClaim(path)
+	defer unlock()
+
+	if err := appendComment(path, questionMarker+" "+strings.TrimSpace(question)); err != nil {
 		return err
 	}
-	fmt.Printf("%s → comment added\n", path)
+	if err := SetStatus(path, StatusAsking); err != nil {
+		return err
+	}
+	fmt.Printf("%s → Status: %s\n", path, StatusAsking)
 	return nil
+}
+
+// answerCLI records the operator's answer and returns the issue to claimed. It
+// is a compare-and-set like claim: only an asking issue can be answered, and the
+// status is re-read inside the per-file lock. The answer text alone goes to
+// stdout so the drain can read it back.
+func answerCLI(path, answer string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("issue file not found: %s", path)
+	}
+	unlock := lockClaim(path)
+	defer unlock()
+
+	if status := normStatus(readStatus(path)); status != StatusAsking {
+		if status == "" {
+			status = "(none)"
+		}
+		return fmt.Errorf("%s not asking: %s", path, status)
+	}
+	answer = strings.TrimSpace(answer)
+	if err := appendComment(path, answerMarker+" "+answer); err != nil {
+		return err
+	}
+	if err := SetStatus(path, StatusClaimed); err != nil {
+		return err
+	}
+	fmt.Println(answer)
+	return nil
+}
+
+// LatestAnswer returns the text of the last operator answer recorded on an
+// issue file and how many answers the file holds (0: none). An answer runs from
+// its marker to the next question/answer marker or "## " heading.
+func LatestAnswer(path string) (string, int, error) {
+	return latestEntry(path, answerMarker)
+}
+
+// LatestQuestion is LatestAnswer for the last agent question.
+func LatestQuestion(path string) (string, int, error) {
+	return latestEntry(path, questionMarker)
+}
+
+// latestEntry returns the last question or answer entry opened by marker, and
+// how many such entries there are.
+func latestEntry(path, marker string) (string, int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, err
+	}
+	var cur []string
+	n, in := 0, false
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.HasPrefix(line, marker):
+			cur = []string{strings.TrimPrefix(line, marker)}
+			n++
+			in = true
+		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, answerMarker), strings.HasPrefix(line, "## "):
+			in = false
+		case in:
+			cur = append(cur, line)
+		}
+	}
+	if n == 0 {
+		return "", 0, nil
+	}
+	return strings.TrimSpace(strings.Join(cur, "\n")), n, nil
+}
+
+// Exchange is one operator answer and the agent question(s) it answers: every
+// question asked since the previous answer, joined by newlines.
+type Exchange struct {
+	Question string
+	Answer   string
+}
+
+// Exchanges returns one Exchange per operator answer on an issue file, in file
+// order, so len(result) matches the count LatestAnswer reports.
+func Exchanges(path string) ([]Exchange, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []Exchange
+	var questions, cur []string
+	kind := ""
+	flush := func() {
+		text := strings.TrimSpace(strings.Join(cur, "\n"))
+		switch kind {
+		case questionMarker:
+			questions = append(questions, text)
+		case answerMarker:
+			out = append(out, Exchange{Question: strings.Join(questions, "\n"), Answer: text})
+			questions = nil
+		}
+		kind, cur = "", nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, answerMarker):
+			flush()
+			kind = questionMarker
+			if strings.HasPrefix(line, answerMarker) {
+				kind = answerMarker
+			}
+			cur = []string{strings.TrimPrefix(line, kind)}
+		case strings.HasPrefix(line, "## "):
+			flush()
+		case kind != "":
+			cur = append(cur, line)
+		}
+	}
+	flush()
+	return out, nil
 }
 
 // appendSection appends "## <heading>\n\n<body>" to a file, adding a leading
@@ -322,7 +496,7 @@ func appendSection(path, heading, body string) error {
 	}
 	text := strings.TrimRight(string(data), "\n")
 	text += fmt.Sprintf("\n\n## %s\n\n%s\n", heading, body)
-	return os.WriteFile(path, []byte(text), 0o644)
+	return writeFileAtomic(path, []byte(text))
 }
 
 // list prints the backlog for a repo, grouped by feature — a plain-text view
@@ -384,12 +558,24 @@ type wavesOutput struct {
 // excluded even though they share the "todo" bucket: `capataz issue claim`
 // only succeeds from ready-for-agent, so emitting them would make a drain spin
 // on issues it can never claim. The --json flag is required by the caller.
-func wavesJSON(feature string) error {
+//
+// The branch prefix resolves flag (--branch-prefix) > CAPATAZ_BRANCH_PREFIX env
+// (how `capataz drain --branch-prefix` hands its flag down) > per-repo config >
+// global config > empty.
+func wavesJSON(feature string, args []string) error {
 	// Resolve the repo root by walking up from cwd to find the .scratch/ parent.
 	// We do it by using the primary checkout of the cwd, falling back to ".".
 	repo := "."
 	if p, err := worktree.PrimaryCheckout("."); err == nil {
 		repo = p
+	}
+
+	prefix := config.Load().DrainFor(repo).BranchPrefix
+	if v, ok := os.LookupEnv("CAPATAZ_BRANCH_PREFIX"); ok {
+		prefix = v
+	}
+	if v, ok := lookupFlag(args, "--branch-prefix"); ok {
+		prefix = v
 	}
 
 	feats, err := Scan(repo)
@@ -429,7 +615,7 @@ func wavesJSON(feature string) error {
 				Path:    iss.Path,
 				Feature: iss.Feature,
 				Status:  iss.Status,
-				Branch:  DispatchBranch(iss),
+				Branch:  DispatchBranch(iss, prefix),
 			})
 		}
 		out.Waves = append(out.Waves, w)
@@ -441,6 +627,20 @@ func wavesJSON(feature string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+// lookupFlag is flagValue that also reports whether the flag was present, so an
+// explicit empty value (--branch-prefix "") can override config.
+func lookupFlag(args []string, name string) (string, bool) {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1], true
+		}
+		if strings.HasPrefix(a, name+"=") {
+			return strings.TrimPrefix(a, name+"="), true
+		}
+	}
+	return "", false
 }
 
 // flagValue returns the value following name in args (e.g. --answer "text"), or
@@ -468,5 +668,5 @@ func hasFlag(args []string, name string) bool {
 }
 
 func usageErr() error {
-	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|list|new|waves> <path|feature> [args]")
+	return fmt.Errorf("usage: capataz issue <claim [--force]|resolve|status|comment|ask|answer|list|new|waves> <path|feature> [args]")
 }

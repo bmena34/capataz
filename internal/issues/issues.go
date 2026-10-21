@@ -64,6 +64,7 @@ const (
 	StatusReadyForHuman = "ready-for-human" // triaged: needs a human, not an agent
 	StatusWontfix       = "wontfix"         // terminal: decided not to do
 	StatusClaimed       = "claimed"         // an agent is working it
+	StatusAsking        = "asking"          // a claimed issue's agent is waiting on an operator answer
 	StatusResolved      = "resolved"        // terminal: implemented
 
 	// Done aliases: everyday terminal statuses treated the same as resolved.
@@ -99,6 +100,7 @@ var statuses = map[string]statusInfo{
 	StatusReadyForHuman: {Bucket: BucketTodo, Label: "HUMAN"},
 	StatusNeedsInfo:     {Bucket: BucketTodo, Label: "NEEDS-INFO"},
 	StatusClaimed:       {Bucket: BucketDoing, Label: "CLAIMED"},
+	StatusAsking:        {Bucket: BucketDoing, Label: "ASKING"},
 	StatusResolved:      {Bucket: BucketDone, Label: "DONE"},
 	StatusDone:          {Bucket: BucketDone, Label: "DONE"},
 	StatusClosed:        {Bucket: BucketDone, Label: "DONE"},
@@ -523,21 +525,17 @@ func Dispatchable(iss Issue) bool {
 	return Bucket(iss) == BucketTodo
 }
 
-// BranchPrefix is the prefix capataz puts on every dispatched worktree branch:
-// dispatch cuts `capataz/<feature>-<NN>-<slug>`, so Round 2's merge-back scans
-// only branches carrying it.
-const BranchPrefix = "capataz/"
-
 // DispatchBranch returns the worktree branch name for an issue —
-// `capataz/<feature>-<NN>-<slug>`, using "--" for an unnumbered issue. It is the
-// single source of truth for the dispatch branch shape so dispatch (Round 1) and
-// merge-back matching (Round 2) can't drift apart.
-func DispatchBranch(iss Issue) string {
+// `<prefix><feature>-<NN>-<slug>`, using "--" for an unnumbered issue. The
+// prefix is configurable (drain.branch_prefix) and empty by default. Nothing
+// should identify dispatch branches by prefix; the drain carries the exact
+// branch from `capataz issue waves --json`.
+func DispatchBranch(iss Issue, prefix string) string {
 	num := iss.Num
 	if num == "" {
 		num = "--"
 	}
-	return BranchPrefix + iss.Feature + "-" + num + "-" + iss.Slug
+	return prefix + iss.Feature + "-" + num + "-" + iss.Slug
 }
 
 // slugToTitle turns "add-login-form" into "Add login form".
@@ -551,6 +549,30 @@ func slugToTitle(slug string) string {
 		words[0] = string(unicode.ToUpper(r)) + words[0][size:]
 	}
 	return strings.Join(words, " ")
+}
+
+// writeFileAtomic replaces path with data via a temp file in the same dir and a
+// rename, so a concurrent reader (the drain's status poll) never sees the file
+// truncated or half-written.
+func writeFileAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // SetStatus rewrites the Status line of an issue file in place, preserving the
@@ -574,7 +596,7 @@ func SetStatus(path, status string) error {
 		if headerRe.MatchString(trimmed) {
 			if m := headerRe.FindStringSubmatch(trimmed); m != nil && strings.EqualFold(m[1], "status") {
 				lines[i] = newLine
-				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+				return writeFileAtomic(path, []byte(strings.Join(lines, "\n")))
 			}
 		}
 		if titleRe.MatchString(trimmed) {
@@ -592,5 +614,5 @@ func SetStatus(path, status string) error {
 		out = append(out, newLine)
 	}
 	out = append(out, lines[insertAt:]...)
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+	return writeFileAtomic(path, []byte(strings.Join(out, "\n")))
 }

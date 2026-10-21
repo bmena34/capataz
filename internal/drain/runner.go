@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bmena34/capataz/internal/issues"
 )
 
 // Runner is the interface behind all capataz and herdr shell-outs.
@@ -35,6 +37,31 @@ type Runner interface {
 	// TrustDir pre-seeds Claude folder-trust for a worktree dir (capataz trust-dir).
 	TrustDir(path string) error
 
+	// WorktreeDirty reports whether the worktree at path has uncommitted or
+	// untracked changes (git status --porcelain non-empty). The drain checks it
+	// before any cleanup so unlanded work is never deleted.
+	WorktreeDirty(path string) (bool, error)
+
+	// IssueStatus returns the issue file's current Status: (lowercased), read
+	// straight from the file at path. The drain uses it to tell "agent stopped to
+	// ask a question" (asking, needs-info, ready-for-human) from "agent did nothing".
+	IssueStatus(path string) (string, error)
+
+	// IssueQuestion / IssueAnswer return the latest agent question / operator
+	// answer recorded on the issue file (capataz issue ask / answer), or "".
+	// IssueAnswer also returns how many answers the file holds, so the drain can
+	// tell an answer it has not delivered yet from one it has.
+	IssueQuestion(path string) (string, error)
+	IssueAnswer(path string) (string, int, error)
+
+	// IssueExchanges returns every operator answer on the issue file, each with
+	// the question(s) it answers, in order — so the drain can deliver several
+	// answers that piled up while the agent was still in its turn.
+	IssueExchanges(path string) ([]issues.Exchange, error)
+
+	// Notify raises an operator notification (`herdr notification show`).
+	Notify(title, body string) error
+
 	// DeleteBranch deletes <branch> in repo — cleanup after a failed dispatch.
 	DeleteBranch(repo, branch string) error
 
@@ -58,8 +85,14 @@ type Runner interface {
 
 	// AgentReachedWorking reports whether the agent left idle (working/done/
 	// blocked) shortly after a prompt — i.e. it received the task. False → the
-	// prompt was likely dropped and should be resubmitted.
+	// prompt was likely dropped and should be resubmitted. Only meaningful for
+	// a fresh (idle) agent: one that already ended a turn is still done.
 	AgentReachedWorking(name string) bool
+
+	// AgentTurn reads the agent's current state from `herdr agent list`: its
+	// status and completion_seq (bumped each time it ends a turn). Returns
+	// statusGone when herdr no longer lists the agent.
+	AgentTurn(name string) (status string, completionSeq int, err error)
 
 	// MergeResolved reports whether repo has no in-progress conflicted merge.
 	MergeResolved(repo string) (bool, error)
@@ -67,9 +100,21 @@ type Runner interface {
 	// ClosePane closes a herdr pane (tears down a fix-conflict base workspace).
 	ClosePane(paneID string) error
 
-	// AgentWait runs `herdr agent wait <target> --until done --until blocked --timeout <ms>`.
-	// Returns the final status string ("done", "blocked", "timeout", or error text).
+	// AgentWait runs `herdr agent wait <target> --until done --until idle --until blocked --timeout <ms>`.
+	// Returns "done", "blocked", "timeout", or statusGone when herdr no longer
+	// knows the agent (pane closed, agent crashed).
 	AgentWait(target string, timeoutMS int) (status string, err error)
+
+	// AgentUnblocked waits for a blocked agent to leave blocked:
+	// `herdr agent wait <target> --until working --until done --until idle --timeout <ms>`.
+	// Returns "working", "done", "timeout", or statusGone.
+	AgentUnblocked(target string, timeoutMS int) (status string, err error)
+
+	// AgentResumed waits for an agent that ended its turn to start another one
+	// on its own (Claude Code wakes it when a background shell finishes):
+	// `herdr agent wait <target> --until working --until blocked --timeout <ms>`.
+	// Returns "working", "blocked", "timeout", or statusGone.
+	AgentResumed(target string, timeoutMS int) (status string, err error)
 
 	// Merge runs `git -C <repo> merge --no-ff <branch>`.
 	// Returns (false, nil) on a clean merge. Returns (true, nil) when the merge
@@ -166,6 +211,39 @@ func (r *realRunner) TrustDir(path string) error {
 	out, err := exec.Command(r.capatazBin, "trust-dir", path).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("capataz trust-dir %s: %w\n%s", path, err, out)
+	}
+	return nil
+}
+
+func (r *realRunner) WorktreeDirty(path string) (bool, error) {
+	out, err := exec.Command("git", "-C", path, "status", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git -C %s status --porcelain: %w", path, err)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func (r *realRunner) IssueStatus(path string) (string, error) {
+	return issues.ReadStatus(path)
+}
+
+func (r *realRunner) IssueQuestion(path string) (string, error) {
+	q, _, err := issues.LatestQuestion(path)
+	return q, err
+}
+
+func (r *realRunner) IssueAnswer(path string) (string, int, error) {
+	return issues.LatestAnswer(path)
+}
+
+func (r *realRunner) IssueExchanges(path string) ([]issues.Exchange, error) {
+	return issues.Exchanges(path)
+}
+
+func (r *realRunner) Notify(title, body string) error {
+	out, err := exec.Command(r.herdrBin, "notification", "show", title, "--body", body, "--sound", "request").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("herdr notification show: %w\n%s", err, out)
 	}
 	return nil
 }
@@ -312,6 +390,50 @@ func (r *realRunner) AgentReachedWorking(name string) bool {
 	return err == nil
 }
 
+// agentListResult parses the subset of `herdr agent list` output AgentTurn needs.
+type agentListResult struct {
+	Result *struct {
+		Agents []struct {
+			Name          string `json:"name"`
+			PaneID        string `json:"pane_id"`
+			AgentStatus   string `json:"agent_status"`
+			CompletionSeq int    `json:"completion_seq"`
+		} `json:"agents"`
+	} `json:"result"`
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (r *realRunner) AgentTurn(name string) (string, int, error) {
+	out, err := exec.Command(r.herdrBin, "agent", "list").Output()
+	if err != nil {
+		return "", 0, fmt.Errorf("herdr agent list: %w\noutput: %s", err, out)
+	}
+	return parseAgentTurn(name, out)
+}
+
+// parseAgentTurn finds name (an agent name or pane id) in `herdr agent list`
+// output and returns its status and completion_seq.
+func parseAgentTurn(name string, out []byte) (string, int, error) {
+	var result agentListResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		return "", 0, fmt.Errorf("herdr agent list: parse output: %w\nraw: %s", err, out)
+	}
+	if result.Error != nil {
+		return "", 0, fmt.Errorf("herdr agent list: %s: %s", result.Error.Code, result.Error.Message)
+	}
+	if result.Result != nil {
+		for _, a := range result.Result.Agents {
+			if a.Name == name || a.PaneID == name {
+				return a.AgentStatus, a.CompletionSeq, nil
+			}
+		}
+	}
+	return statusGone, 0, nil
+}
+
 // MergeResolved reports whether repo has no in-progress conflicted merge — no
 // .git/MERGE_HEAD and no unmerged (conflicted) files. Used to verify a
 // fix-conflict agent actually completed the merge before declaring success.
@@ -336,9 +458,16 @@ func (r *realRunner) ClosePane(paneID string) error {
 	return nil
 }
 
+// statusGone is the AgentWait/AgentUnblocked status for an agent herdr no
+// longer knows (herdr's agent_not_found).
+const statusGone = "gone"
+
 // agentWaitResult parses the subset of herdr agent wait output we need.
 type agentWaitResult struct {
 	Result *struct {
+		Agent *struct {
+			AgentStatus string `json:"agent_status"`
+		} `json:"agent"`
 		Status string `json:"status"`
 		State  string `json:"state"`
 	} `json:"result"`
@@ -354,37 +483,70 @@ func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
 	// herdr reports "done" for an UNFOCUSED tab but "idle" for a focused one
 	// (same underlying finished state), so accept both — else a drain hangs
 	// whenever an operator clicks into the pane. "blocked" means it needs input.
-	args := []string{
-		"agent", "wait", target,
-		"--until", "done",
-		"--until", "idle",
-		"--until", "blocked",
-		"--timeout", fmt.Sprintf("%d", timeoutMS),
+	return r.agentWait(target, timeoutMS, "done", "idle", "blocked")
+}
+
+func (r *realRunner) AgentUnblocked(target string, timeoutMS int) (string, error) {
+	return r.agentWait(target, timeoutMS, "working", "done", "idle")
+}
+
+func (r *realRunner) AgentResumed(target string, timeoutMS int) (string, error) {
+	return r.agentWait(target, timeoutMS, "working", "blocked")
+}
+
+// agentWait runs `herdr agent wait <target> --until <s>... --timeout <ms>` and
+// returns the state it stopped on, with idle folded into done.
+func (r *realRunner) agentWait(target string, timeoutMS int, until ...string) (string, error) {
+	args := []string{"agent", "wait", target}
+	for _, u := range until {
+		args = append(args, "--until", u)
 	}
+	args = append(args, "--timeout", fmt.Sprintf("%d", timeoutMS))
 	out, err := exec.Command(r.herdrBin, args...).Output()
-	if err != nil {
-		// A timeout from herdr returns non-zero — treat it as "timeout" status
-		// rather than a hard error, so the loop can surface it and continue.
-		combined, _ := exec.Command(r.herdrBin, args...).CombinedOutput()
-		if strings.Contains(string(combined), "timeout") || strings.Contains(err.Error(), "exit status") {
-			return "timeout", nil
-		}
-		return "error", fmt.Errorf("herdr agent wait %s: %w\noutput: %s", target, err, out)
+	var stderr []byte
+	if ee, ok := err.(*exec.ExitError); ok {
+		stderr = ee.Stderr
 	}
+	return parseAgentWait(target, out, stderr, err)
+}
+
+// parseAgentWait maps `herdr agent wait` output to the state it stopped on,
+// with idle folded into done. herdr 0.9.5 reports failures (timeout, missing
+// agent) as a JSON error on stderr with a non-zero exit, so the error code is
+// read, from stdout or else stderr, before the exit status.
+func parseAgentWait(target string, out, stderr []byte, runErr error) (string, error) {
 	var result agentWaitResult
-	if jsonErr := json.Unmarshal(out, &result); jsonErr != nil {
-		// Non-JSON or partial output — treat as done if command succeeded
-		return "done", nil
+	jsonErr := json.Unmarshal(out, &result)
+	if (jsonErr != nil || result.Error == nil && result.Result == nil) && len(stderr) > 0 {
+		var errResult agentWaitResult
+		if json.Unmarshal(stderr, &errResult) == nil && errResult.Error != nil {
+			result, jsonErr = errResult, nil
+		}
 	}
-	if result.Error != nil {
-		// A timeout error from herdr
-		if strings.Contains(result.Error.Code, "timeout") {
+	if jsonErr == nil && result.Error != nil {
+		switch result.Error.Code {
+		case "timeout":
 			return "timeout", nil
+		case "agent_not_found":
+			return statusGone, nil
 		}
 		return "error", fmt.Errorf("herdr agent wait %s: %s: %s", target, result.Error.Code, result.Error.Message)
 	}
+	if runErr != nil {
+		return "error", fmt.Errorf("herdr agent wait %s: %w\noutput: %s%s", target, runErr, out, stderr)
+	}
+	if jsonErr != nil {
+		// Non-JSON or partial output — treat as done if command succeeded
+		return "done", nil
+	}
 	if result.Result != nil {
-		s := result.Result.Status
+		var s string
+		if result.Result.Agent != nil {
+			s = result.Result.Agent.AgentStatus // herdr 0.9+
+		}
+		if s == "" {
+			s = result.Result.Status
+		}
 		if s == "" {
 			s = result.Result.State
 		}

@@ -72,7 +72,7 @@ If your diff is more than a single small change — it touches multiple files, o
 
 ### 4c. Isolated-worktree mode (only if the dispatch says so)
 
-If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (`capataz drain` dispatches issues this way, on branches named `capataz/<feature>-<NN>-<slug>`), two things change:
+If the dispatch prompt tells you that you are running in an **isolated git worktree** on a branch (`capataz drain` dispatches issues this way, on the branch named in the dispatch prompt), three things change:
 
 - **Commit when you resolve.** Do your work as normal, but as part of resolving, commit it on that branch:
 
@@ -81,6 +81,14 @@ If the dispatch prompt tells you that you are running in an **isolated git workt
   ```
 
   Do **not** merge and do **not** switch branches — the drain merges the branch back into the base, and a `capataz-fix-conflict` agent handles any conflict.
+- **Ask the operator via the CLI, never in chat.** Nobody reads the drain's chat. When you're blocked on a decision only the operator can make, run
+
+  ```sh
+  capataz issue ask <abs issue path> "<question, with the options you see>"
+  ```
+
+  keep working on anything that doesn't depend on the answer, then end your turn. The drain notifies the operator and delivers the answer to this same session as a prompt — continue the issue from there. You may ask more than once. `needs-info` (step 4) stays for "this issue is underspecified, stop".
+- **Run long commands in the foreground.** Never end your turn while a background shell you started is still running: the drain treats a turn end as the end of your work and only waits a few minutes for you to resume. The one exception is ending your turn after `capataz issue ask`.
 - **The issue path in the prompt is absolute.** It points at the primary checkout's `.scratch/` (which is gitignored and therefore absent in the worktree). Use that absolute path verbatim for `capataz issue claim/resolve` — never a relative one.
 
 In the normal (non-worktree) case, behavior is unchanged: don't commit unless the user asks; just surface the diff.

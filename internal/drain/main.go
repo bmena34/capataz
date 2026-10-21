@@ -14,8 +14,10 @@
 //
 //	-concurrency  int    max concurrent agents per wave (0 = unlimited, default 3)
 //	-timeout      int    per-agent wait timeout in milliseconds (default 3600000)
+//	-resume-grace int    ms a worker that ended its turn unfinished gets to resume (default 180000)
 //	-skip-perms         pass --dangerously-skip-permissions to dispatched agents
 //	-repo         string repo path for worktree creation (default: cwd)
+//	-branch-prefix string  branch name prefix (overrides config drain.branch_prefix)
 //	-dry-run            print plan without creating worktrees or starting agents
 //
 // Environment:
@@ -28,6 +30,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/bmena34/capataz/internal/config"
+	"github.com/bmena34/capataz/internal/worktree"
 )
 
 // Run parses args and runs the command; it is `capataz drain`.
@@ -37,8 +42,10 @@ func Run(args []string) error {
 
 	concurrency := fs.Int("concurrency", 3, "max concurrent agents per wave (0 = unlimited)")
 	timeoutMS := fs.Int("timeout", 3_600_000, "per-agent wait timeout in milliseconds")
+	resumeGraceMS := fs.Int("resume-grace", defaultResumeGraceMS, "milliseconds a worker that ended its turn with unfinished work gets to start working again")
 	skipPerms := fs.Bool("skip-perms", false, "pass --dangerously-skip-permissions to dispatched agents")
 	repoPath := fs.String("repo", "", "repo path for worktree creation (default: current directory)")
+	branchPrefix := fs.String("branch-prefix", "", "dispatch branch prefix (default: drain.branch_prefix from config, else empty)")
 	dryRun := fs.Bool("dry-run", false, "print planned dispatch without creating worktrees or starting agents")
 
 	fs.Usage = func() {
@@ -59,6 +66,14 @@ func Run(args []string) error {
 		return fmt.Errorf("feature argument required")
 	}
 	feature := fs.Arg(0)
+
+	// `capataz issue waves` (spawned by the runner) reads the prefix from this
+	// env var, so the flag wins over config without widening the Runner API.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "branch-prefix" {
+			os.Setenv("CAPATAZ_BRANCH_PREFIX", *branchPrefix)
+		}
+	})
 
 	// Resolve repo path: flag takes precedence, then cwd.
 	repo := *repoPath
@@ -87,12 +102,24 @@ func Run(args []string) error {
 		Concurrency:     *concurrency,
 		SkipPermissions: *skipPerms,
 		AgentTimeoutMS:  *timeoutMS,
+		ResumeGraceMS:   *resumeGraceMS,
 		RepoPath:        repo,
 		DryRun:          *dryRun,
 		Out:             os.Stdout,
+		StallMinutes:    config.Load().DrainFor(configKey(repo)).StallMinutes,
 	}
 
 	return Drain(cfg, runner)
+}
+
+// configKey is the drain.repos key for repo: its primary checkout, the same
+// key `capataz issue waves` uses for branch_prefix, so --repo ., a
+// subdirectory or a linked worktree all hit the same entry. Falls back to repo.
+func configKey(repo string) string {
+	if p, err := worktree.PrimaryCheckout(repo); err == nil {
+		return p
+	}
+	return repo
 }
 
 // selfBin is the capataz binary to shell out to: CAPATAZ_BIN if set, else the
