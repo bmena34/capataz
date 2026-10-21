@@ -205,6 +205,19 @@ Or invoke them directly: `herdr plugin action invoke issues` / `herdr plugin act
   ```
 
   `▸` marks the pane you opened it from. Each agent's context is read straight from its Claude Code transcript, located via the session id in `herdr agent list`. Rows are labeled with the pane's terminal title, falling back to the repo directory name. Panes running another agent show as `no context data` rather than disappearing.
+- **Sidebar context gauges** — the plugin's startup hook runs a background reporter (`capataz usage-view -report`) that pushes each Claude pane's gauge into herdr every 5s as the pane-metadata token `context`. Show it under each agent with a `$context` row:
+
+  ```toml
+  [ui.sidebar.agents]
+  rows = [
+    [{ token = "terminal_title", bold = true }],
+    ["state_icon", "state_text"],
+    [{ token = "workspace", dim = true }, "tab"],
+    [{ token = "$context", dim = true }],
+  ]
+  ```
+
+  The tokens expire after 15s, so a dead reporter's gauges disappear instead of freezing. Its pidfile and log live in `~/.local/state/capataz/`. To start it without restarting herdr, run `./bin/context-reporter.sh`; to stop it, `kill $(cat ~/.local/state/capataz/context-reporter.pid)`.
 
 `capataz usage-view` also runs outside herdr: `-once` prints one frame, `-no-plan` skips the plan gauge, `-limit 1m` overrides the assumed context window.
 

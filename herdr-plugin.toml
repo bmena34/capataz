@@ -75,3 +75,14 @@ id = "usage"
 title = "Capataz: Usage & Context"
 platforms = ["macos", "linux"]
 command = ["./bin/open-usage.sh"]
+
+# ---------------------------------------------------------------------------
+# startup — launch the sidebar context reporter. Runs once per server start
+# (and again on live handoff); the hook exits immediately, leaving a
+# pidfile-guarded background process (`capataz usage-view -report`) that pushes
+# each Claude pane's context gauge into herdr as the pane-metadata token
+# "context". Show it with a "$context" row in [ui.sidebar.agents]; without that
+# row the tokens are ignored.
+[[startup]]
+platforms = ["macos", "linux"]
+command = ["./bin/context-reporter.sh"]
