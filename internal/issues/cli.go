@@ -156,13 +156,18 @@ func readStatus(path string) string {
 }
 
 // ReadStatus is readStatus for callers that hold an issue's absolute path (the
-// drain): it reads the file directly rather than scanning a backlog root, and
-// errors only when the file can't be read.
+// drain): it reads the file directly rather than scanning a backlog root. It
+// errors when the file can't be read or has no Status line, so a caller can
+// treat a torn or truncated read as transient rather than as a status change.
 func ReadStatus(path string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
 		return "", err
 	}
-	return readStatus(path), nil
+	st := readStatus(path)
+	if st == "" {
+		return "", fmt.Errorf("%s: no Status line", path)
+	}
+	return st, nil
 }
 
 // create writes a new ready-for-agent issue at .scratch/<feature>/issues/NN-slug.md,
@@ -338,7 +343,7 @@ func appendComment(path, text string) error {
 	} else {
 		s += "\n\n## Comments\n\n" + strings.TrimSpace(text) + "\n"
 	}
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeFileAtomic(path, []byte(s))
 }
 
 // Markers that open a question or answer comment. LatestAnswer parses them
@@ -444,7 +449,7 @@ func appendSection(path, heading, body string) error {
 	}
 	text := strings.TrimRight(string(data), "\n")
 	text += fmt.Sprintf("\n\n## %s\n\n%s\n", heading, body)
-	return os.WriteFile(path, []byte(text), 0o644)
+	return writeFileAtomic(path, []byte(text))
 }
 
 // list prints the backlog for a repo, grouped by feature — a plain-text view

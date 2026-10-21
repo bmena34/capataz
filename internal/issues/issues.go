@@ -551,6 +551,30 @@ func slugToTitle(slug string) string {
 	return strings.Join(words, " ")
 }
 
+// writeFileAtomic replaces path with data via a temp file in the same dir and a
+// rename, so a concurrent reader (the drain's status poll) never sees the file
+// truncated or half-written.
+func writeFileAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // SetStatus rewrites the Status line of an issue file in place, preserving the
 // rest of the file. If there is no Status line it inserts one just after the
 // title heading (or at the top when there is no heading). status is written
@@ -572,7 +596,7 @@ func SetStatus(path, status string) error {
 		if headerRe.MatchString(trimmed) {
 			if m := headerRe.FindStringSubmatch(trimmed); m != nil && strings.EqualFold(m[1], "status") {
 				lines[i] = newLine
-				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+				return writeFileAtomic(path, []byte(strings.Join(lines, "\n")))
 			}
 		}
 		if titleRe.MatchString(trimmed) {
@@ -590,5 +614,5 @@ func SetStatus(path, status string) error {
 		out = append(out, newLine)
 	}
 	out = append(out, lines[insertAt:]...)
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+	return writeFileAtomic(path, []byte(strings.Join(out, "\n")))
 }

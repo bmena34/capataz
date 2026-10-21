@@ -776,3 +776,51 @@ func TestScratchModTimeStableWhenUnchanged(t *testing.T) {
 		t.Fatalf("probe not stable across calls: %v vs %v", a, b)
 	}
 }
+
+// A torn read (the file mid-rewrite) must surface as an error, not as status "".
+func TestReadStatusErrorsWithoutStatusLine(t *testing.T) {
+	repo := t.TempDir()
+	empty := writeIssue(t, repo, "f", "01-a.md", "")
+	if st, err := ReadStatus(empty); err == nil {
+		t.Errorf("ReadStatus(empty file) = %q, nil; want error", st)
+	}
+	partial := writeIssue(t, repo, "f", "02-b.md", "# B\n")
+	if st, err := ReadStatus(partial); err == nil {
+		t.Errorf("ReadStatus(no Status line) = %q, nil; want error", st)
+	}
+	ok := writeIssue(t, repo, "f", "03-c.md", "# C\n\nStatus: Asking\n")
+	if st, err := ReadStatus(ok); err != nil || st != "asking" {
+		t.Errorf("ReadStatus = %q, %v; want asking", st, err)
+	}
+}
+
+// Writers replace the file via rename, leaving no temp files behind.
+func TestWritersLeaveNoTempFiles(t *testing.T) {
+	repo := t.TempDir()
+	path := writeIssue(t, repo, "f", "01-a.md", "# A\n\nStatus: claimed\n\n## What to build\n\nx\n")
+	if err := SetStatus(path, "asking"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendComment(path, "a comment"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendSection(path, "Answer", "done"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("issues dir holds %d entries, want only the issue file", len(entries))
+	}
+	data, _ := os.ReadFile(path)
+	for _, want := range []string{"Status: asking", "a comment", "## Answer"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("file missing %q:\n%s", want, data)
+		}
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v, want 0644", fi.Mode().Perm())
+	}
+}
