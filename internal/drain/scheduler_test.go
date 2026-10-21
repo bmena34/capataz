@@ -106,6 +106,33 @@ func TestDrain_BlockedAgentIsWaitedOut(t *testing.T) {
 	}
 }
 
+func TestDrain_BlockedAgentThatVanishesEndsDispatch(t *testing.T) {
+	// The operator closes a blocked agent's pane instead of answering: the
+	// drain stops waiting for it to leave blocked and keeps the worktree.
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		agentWaitSeq:   map[string][]string{"drain-f-01": {"blocked"}},
+		unblockSeq:     map[string][]string{"drain-f-01": {"timeout", statusGone, "working"}},
+		clock:          clock,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	if n := countCalls(runner.calls, "AgentUnblocked"); n != 2 {
+		t.Errorf("AgentUnblocked calls: got %d, want 2 (stop once the agent is gone)", n)
+	}
+	if n := countCalls(runner.calls, "AgentWait"); n != 1 {
+		t.Errorf("AgentWait calls: got %d, want 1", n)
+	}
+	for _, op := range []string{"Merge", "WorktreeRemove"} {
+		if n := countCalls(runner.calls, op); n != 0 {
+			t.Errorf("%s calls: got %d, want 0 (worktree kept)", op, n)
+		}
+	}
+}
+
 func TestDrain_BlockedTimeDoesNotConsumeTimeout(t *testing.T) {
 	// Each AgentWait burns 4s of a 10s budget; blocked spells take hours. Three
 	// waits fit in the budget only if blocked time is excluded.

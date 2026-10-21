@@ -88,12 +88,13 @@ type Runner interface {
 	ClosePane(paneID string) error
 
 	// AgentWait runs `herdr agent wait <target> --until done --until idle --until blocked --timeout <ms>`.
-	// Returns the final status string ("done", "blocked", "timeout", or error text).
+	// Returns "done", "blocked", "timeout", or statusGone when herdr no longer
+	// knows the agent (pane closed, agent crashed).
 	AgentWait(target string, timeoutMS int) (status string, err error)
 
 	// AgentUnblocked waits for a blocked agent to leave blocked:
 	// `herdr agent wait <target> --until working --until done --until idle --timeout <ms>`.
-	// Returns "working", "done", or "timeout".
+	// Returns "working", "done", "timeout", or statusGone.
 	AgentUnblocked(target string, timeoutMS int) (status string, err error)
 
 	// Merge runs `git -C <repo> merge --no-ff <branch>`.
@@ -402,6 +403,10 @@ func (r *realRunner) ClosePane(paneID string) error {
 	return nil
 }
 
+// statusGone is the AgentWait/AgentUnblocked status for an agent herdr no
+// longer knows (herdr's agent_not_found).
+const statusGone = "gone"
+
 // agentWaitResult parses the subset of herdr agent wait output we need.
 type agentWaitResult struct {
 	Result *struct {
@@ -436,26 +441,29 @@ func (r *realRunner) agentWait(target string, timeoutMS int, until ...string) (s
 	}
 	args = append(args, "--timeout", fmt.Sprintf("%d", timeoutMS))
 	out, err := exec.Command(r.herdrBin, args...).Output()
-	if err != nil {
-		// A timeout from herdr returns non-zero — treat it as "timeout" status
-		// rather than a hard error, so the loop can surface it and continue.
-		combined, _ := exec.Command(r.herdrBin, args...).CombinedOutput()
-		if strings.Contains(string(combined), "timeout") || strings.Contains(err.Error(), "exit status") {
-			return "timeout", nil
-		}
-		return "error", fmt.Errorf("herdr agent wait %s: %w\noutput: %s", target, err, out)
-	}
+	// herdr reports failures (timeout, missing agent) as a JSON error on stdout
+	// with a non-zero exit, so read the error code before the exit status.
 	var result agentWaitResult
-	if jsonErr := json.Unmarshal(out, &result); jsonErr != nil {
-		// Non-JSON or partial output — treat as done if command succeeded
-		return "done", nil
-	}
-	if result.Error != nil {
-		// A timeout error from herdr
-		if strings.Contains(result.Error.Code, "timeout") {
+	jsonErr := json.Unmarshal(out, &result)
+	if jsonErr == nil && result.Error != nil {
+		switch result.Error.Code {
+		case "timeout":
 			return "timeout", nil
+		case "agent_not_found":
+			return statusGone, nil
 		}
 		return "error", fmt.Errorf("herdr agent wait %s: %s: %s", target, result.Error.Code, result.Error.Message)
+	}
+	if err != nil {
+		var stderr []byte
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = ee.Stderr
+		}
+		return "error", fmt.Errorf("herdr agent wait %s: %w\noutput: %s%s", target, err, out, stderr)
+	}
+	if jsonErr != nil {
+		// Non-JSON or partial output — treat as done if command succeeded
+		return "done", nil
 	}
 	if result.Result != nil {
 		s := result.Result.Status

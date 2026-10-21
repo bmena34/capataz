@@ -320,7 +320,8 @@ const unblockedPoll = time.Hour
 // is notified once, the drain waits for the agent to leave blocked, and that
 // time does not count against budget. A timeout notifies too. who names the
 // work in notifications ("<feature> NN"). A non-nil stall is checked every
-// cfg.stallPoll while the agent works.
+// cfg.stallPoll while the agent works. An agent that disappears from herdr
+// ends the wait with an error.
 func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget time.Duration, stall *stallWatch, logf func(string, ...any)) (string, time.Duration, error) {
 	notified := false
 	logged := false
@@ -344,6 +345,8 @@ func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget 
 			return "error", budget, err
 		}
 		switch status {
+		case statusGone:
+			return "error", budget, agentGone(name, paneID, num, logf)
 		case "done", "idle":
 			return "done", budget, nil
 		case "timeout":
@@ -370,6 +373,9 @@ func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget 
 			if err != nil {
 				return "error", budget, fmt.Errorf("wait for %s to leave blocked: %w", name, err)
 			}
+			if st == statusGone {
+				return "error", budget, agentGone(name, paneID, num, logf)
+			}
 			if st != "blocked" && st != "timeout" {
 				break
 			}
@@ -380,6 +386,13 @@ func waitAgent(cfg Config, runner Runner, name, paneID, who, num string, budget 
 			stall.rearm()
 		}
 	}
+}
+
+// agentGone logs and returns the error for an agent herdr no longer knows: its
+// pane was closed or it crashed, so there is nothing left to wait for.
+func agentGone(name, paneID, num string, logf func(string, ...any)) error {
+	logf("drain: [%s] agent %s is gone — its pane %s was closed or it exited", num, name, paneID)
+	return fmt.Errorf("agent %s is gone (pane %s closed or the agent exited)", name, paneID)
 }
 
 // timedOut notifies the operator that name ran out of time and returns "timeout".
