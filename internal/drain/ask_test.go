@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bmena34/capataz/internal/issues"
 )
 
 const askPath = "/repo/.scratch/f/issues/01-a.md"
@@ -31,7 +33,7 @@ func askCfg(clock *fakeClock, out *strings.Builder) Config {
 func answerPrompts(calls []fakeCall) []string {
 	var out []string
 	for _, c := range callsOf(calls, "AgentPrompt") {
-		if strings.HasPrefix(c.Args[1], "Your question on") {
+		if strings.HasPrefix(c.Args[1], "Your question") {
 			out = append(out, c.Args[1])
 		}
 	}
@@ -151,6 +153,39 @@ func TestDrain_EarlyAnswerDelivered(t *testing.T) {
 			if waits < 2 {
 				t.Errorf("commits verified after the first done, before the answer was delivered")
 			}
+		}
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+}
+
+// The worker asks Q1 and keeps working; the operator answers A1 while it is
+// still in its turn; it then asks Q2 and ends its turn. The one prompt that
+// follows A2 carries both answers, each with its question.
+func TestDrain_EarlyAnswerThenSecondQuestionBothDelivered(t *testing.T) {
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		issueStatusSeq: map[string][]string{askPath: {"asking", "claimed"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"second", 2}}},
+		exchanges: map[string][]issues.Exchange{askPath: {
+			{Question: "which table?", Answer: "first"},
+			{Question: "which column?", Answer: "second"},
+		}},
+		clock: clock,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	got := answerPrompts(runner.calls)
+	if len(got) != 1 {
+		t.Fatalf("answer prompts = %q, want one", got)
+	}
+	for _, want := range []string{"Q: which table?", "A: first", "Q: which column?", "A: second", "Continue the issue."} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("answer prompt %q lacks %q", got[0], want)
 		}
 	}
 	if n := countCalls(runner.calls, "Merge"); n != 1 {
