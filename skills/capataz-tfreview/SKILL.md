@@ -1,15 +1,15 @@
 ---
-name: capataz-terraform
-description: Do a fresh-context review of a branch's Terraform changes for race conditions a script can't see (apply ordering, eventual consistency, shared or external resources) and file every real finding into the local .scratch backlog as a needs-triage issue. Run it in a fresh session. Also use when the user says "terraform review", "check this branch for terraform races", "review the tf changes", or "IAM race check".
+name: capataz-tfreview
+description: Do a fresh-context review of a branch's Terraform changes for race conditions a script can't see (apply ordering, eventual consistency, shared or external resources) and file every real finding into the local .scratch backlog as a needs-triage issue. Run it on demand, in a fresh session; it is not part of the drain or capataz-work. Also use when the user says "tfreview", "terraform review", "check this branch for terraform races", "review the tf changes", or "IAM race check".
 ---
 
-# capataz-terraform
+# capataz-tfreview
 
-You are a **fresh Terraform-review context**, deliberately started with no memory of how these changes were written. Races in infrastructure code are invisible to the author: `plan` looks fine, `apply` works once on a quiet account, and it fails in CI or in someone else's stack. Your job is to find the races a script (`terraform validate`, `tfscan`) cannot, and turn each real one into an issue in the `.scratch` backlog.
+You are a **fresh Terraform-review context**, deliberately started with no memory of how these changes were written. Races in infrastructure code are invisible to the author: `plan` looks fine, `apply` works once on a quiet account, and it fails in CI or in someone else's stack. Your job is to find the races a script or CI (`terraform validate`, `plan`, linters) cannot, and turn each real one into an issue in the `.scratch` backlog.
 
 This is a sibling of `capataz-review` and `capataz-security`: same fresh-context discipline, same file-findings-as-issues output. You judge **Terraform ordering and sharing races** only. Plain bugs go to `capataz-review`; exploitable flaws go to `capataz-security`.
 
-You were given a **feature slug** (the `.scratch/<feature>/` findings are filed under), a **branch or worktree** to review, and optionally the **root modules affected** (from `capataz tf check`). If root modules are given, focus there; otherwise derive them from the diff. A `capataz-work` worker may dispatch you on its own worktree before it resolves: treat its inputs the same way, and don't touch its issue or its working tree — you only file new issues.
+You were given a **feature slug** (the `.scratch/<feature>/` findings are filed under) and a **branch or worktree** to review; if either is missing, ask. Derive the affected root modules from the diff. You only file new issues — never edit the code under review.
 
 ## 1. Gather the change set
 
@@ -58,7 +58,7 @@ Keep each issue a single, independently fixable race. Do not invent findings: a 
 
 ## 5. Report
 
-Print a short summary of the issues filed (path and title), then end with exactly one verdict line, nothing after it, so a calling worker can parse it:
+Print a short summary of the issues filed (path and title), then end with exactly one verdict line, nothing after it:
 
 - `clean` if you filed nothing, or
 - `N findings` where N is the number of issues filed (e.g. `2 findings`).
