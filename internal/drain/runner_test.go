@@ -95,3 +95,20 @@ func TestIssueStatus_ReadsFileNotBacklogRoot(t *testing.T) {
 		t.Fatal("IssueStatus on a missing file: want error")
 	}
 }
+
+func TestParseAgentTurn(t *testing.T) {
+	out := []byte(`{"result":{"agents":[
+		{"agent_status":"idle","completion_seq":176,"pane_id":"w2:p1"},
+		{"agent_status":"done","completion_seq":4,"name":"drain-f-01","pane_id":"wK:p1"}
+	],"type":"agent_list"}}`)
+	st, n, err := parseAgentTurn("drain-f-01", out)
+	if err != nil || st != "done" || n != 4 {
+		t.Errorf("by name: got %q, %d, %v", st, n, err)
+	}
+	if st, n, _ := parseAgentTurn("w2:p1", out); st != "idle" || n != 176 {
+		t.Errorf("by pane: got %q, %d", st, n)
+	}
+	if st, _, _ := parseAgentTurn("drain-f-02", out); st != statusGone {
+		t.Errorf("missing agent: got %q, want %q", st, statusGone)
+	}
+}

@@ -80,8 +80,14 @@ type Runner interface {
 
 	// AgentReachedWorking reports whether the agent left idle (working/done/
 	// blocked) shortly after a prompt — i.e. it received the task. False → the
-	// prompt was likely dropped and should be resubmitted.
+	// prompt was likely dropped and should be resubmitted. Only meaningful for
+	// a fresh (idle) agent: one that already ended a turn is still done.
 	AgentReachedWorking(name string) bool
+
+	// AgentTurn reads the agent's current state from `herdr agent list`: its
+	// status and completion_seq (bumped each time it ends a turn). Returns
+	// statusGone when herdr no longer lists the agent.
+	AgentTurn(name string) (status string, completionSeq int, err error)
 
 	// MergeResolved reports whether repo has no in-progress conflicted merge.
 	MergeResolved(repo string) (bool, error)
@@ -367,6 +373,50 @@ func (r *realRunner) AgentReachedWorking(name string) bool {
 		"--until", "working", "--until", "done", "--until", "blocked",
 		"--timeout", "15000").Run()
 	return err == nil
+}
+
+// agentListResult parses the subset of `herdr agent list` output AgentTurn needs.
+type agentListResult struct {
+	Result *struct {
+		Agents []struct {
+			Name          string `json:"name"`
+			PaneID        string `json:"pane_id"`
+			AgentStatus   string `json:"agent_status"`
+			CompletionSeq int    `json:"completion_seq"`
+		} `json:"agents"`
+	} `json:"result"`
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (r *realRunner) AgentTurn(name string) (string, int, error) {
+	out, err := exec.Command(r.herdrBin, "agent", "list").Output()
+	if err != nil {
+		return "", 0, fmt.Errorf("herdr agent list: %w\noutput: %s", err, out)
+	}
+	return parseAgentTurn(name, out)
+}
+
+// parseAgentTurn finds name (an agent name or pane id) in `herdr agent list`
+// output and returns its status and completion_seq.
+func parseAgentTurn(name string, out []byte) (string, int, error) {
+	var result agentListResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		return "", 0, fmt.Errorf("herdr agent list: parse output: %w\nraw: %s", err, out)
+	}
+	if result.Error != nil {
+		return "", 0, fmt.Errorf("herdr agent list: %s: %s", result.Error.Code, result.Error.Message)
+	}
+	if result.Result != nil {
+		for _, a := range result.Result.Agents {
+			if a.Name == name || a.PaneID == name {
+				return a.AgentStatus, a.CompletionSeq, nil
+			}
+		}
+	}
+	return statusGone, 0, nil
 }
 
 // MergeResolved reports whether repo has no in-progress conflicted merge — no

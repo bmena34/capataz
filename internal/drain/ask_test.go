@@ -238,3 +238,89 @@ func TestWorkPromptAsksViaCLI(t *testing.T) {
 		t.Errorf("workPrompt lacks the ask instruction: %s", p)
 	}
 }
+
+// herdr's agent wait matches the done state the asking turn ended in, so the
+// drain must wait for the agent to pick up the answer before waiting again.
+func TestDrain_AnswerWaitsForNewTurn(t *testing.T) {
+	clock := &fakeClock{}
+	turns := &fakeTurns{lag: 3}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		issueStatusSeq: map[string][]string{askPath: {"asking", "claimed"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"cookies", 1}}},
+		clock:          clock,
+		turns:          turns,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	if turns.staleWaits != 0 {
+		t.Errorf("AgentWait matched the pre-answer done %d time(s)", turns.staleWaits)
+	}
+	if got := answerPrompts(runner.calls); len(got) != 1 {
+		t.Errorf("answer prompts = %q, want 1 (picked up late, not dropped)", got)
+	}
+	if n := countCalls(runner.calls, "AgentWait"); n != 2 {
+		t.Errorf("AgentWait calls: got %d, want 2", n)
+	}
+	if turns.completion != 2 {
+		t.Errorf("turns completed: got %d, want 2 (ask, then the answer)", turns.completion)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+}
+
+// A dropped answer prompt is resubmitted once the resume window passes.
+func TestDrain_DroppedAnswerResubmitted(t *testing.T) {
+	clock := &fakeClock{}
+	turns := &fakeTurns{drop: 1}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		issueStatusSeq: map[string][]string{askPath: {"asking", "claimed"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"cookies", 1}}},
+		clock:          clock,
+		turns:          turns,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	if got := answerPrompts(runner.calls); len(got) != 2 {
+		t.Errorf("answer prompts = %d, want 2 (dropped, resubmitted)", len(got))
+	}
+	if turns.staleWaits != 0 {
+		t.Errorf("AgentWait matched the pre-answer done %d time(s)", turns.staleWaits)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+}
+
+// An agent that never picks up the answer fails the dispatch, keeping its work.
+func TestDrain_AnswerNeverPickedUp(t *testing.T) {
+	clock := &fakeClock{}
+	turns := &fakeTurns{drop: 3}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		issueStatusSeq: map[string][]string{askPath: {"asking", "claimed"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"cookies", 1}}},
+		clock:          clock,
+		turns:          turns,
+	}
+	out := &strings.Builder{}
+	_ = Drain(askCfg(clock, out), runner)
+	if n := countCalls(runner.calls, "AgentWait"); n != 1 {
+		t.Errorf("AgentWait calls: got %d, want 1", n)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 0 {
+		t.Errorf("Merge calls: got %d, want 0", n)
+	}
+	if n := strings.Count(out.String(), "has not resumed after the answer"); n != 3 {
+		t.Errorf("resume retries logged: got %d, want 3:\n%s", n, out)
+	}
+	if got := answerPrompts(runner.calls); len(got) != 3 {
+		t.Errorf("answer prompts = %d, want 3", len(got))
+	}
+}

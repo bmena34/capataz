@@ -459,7 +459,7 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, ans
 		}
 		logf("drain: [%s] the question was answered before agent %s ended its turn", iss.Number, agentName)
 		*answered = n
-		return deliverAnswer(runner, iss, agentName, answer, logf)
+		return deliverAnswer(cfg, runner, iss, agentName, answer, logf)
 	}
 
 	question, err := runner.IssueQuestion(iss.Path)
@@ -493,22 +493,47 @@ func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, ans
 	if *answered >= 0 {
 		*answered = n
 	}
-	return deliverAnswer(runner, iss, agentName, answer, logf)
+	return deliverAnswer(cfg, runner, iss, agentName, answer, logf)
 }
 
+// resumeTimeout bounds how long deliverAnswer waits for the agent to pick up
+// the answer before resubmitting it; resumePoll is how often it looks.
+const (
+	resumeTimeout = 15 * time.Second
+	resumePoll    = 500 * time.Millisecond
+)
+
 // deliverAnswer prompts agentName with the operator's answer and confirms it
-// resumed working, retrying a dropped prompt.
-func deliverAnswer(runner Runner, iss WaveIssue, agentName, answer string, logf func(string, ...any)) (bool, *askFailure) {
+// started a new turn, retrying a dropped prompt. The agent is still in the done
+// state of the turn that asked, which `herdr agent wait` would match at once,
+// so a new turn means it is working or blocked, or its completion_seq moved
+// past the one read before the prompt.
+func deliverAnswer(cfg Config, runner Runner, iss WaveIssue, agentName, answer string, logf func(string, ...any)) (bool, *askFailure) {
 	logf("drain: [%s] delivering answer to agent %s", iss.Number, agentName)
+	_, seq, err := runner.AgentTurn(agentName)
+	if err != nil {
+		return false, &askFailure{"error", fmt.Errorf("read agent state: %w", err)}
+	}
 	prompt := fmt.Sprintf("Your question on %s was answered: %s. Continue the issue.", iss.Path, answer)
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := runner.AgentPrompt(agentName, prompt); err != nil {
 			return false, &askFailure{"error", fmt.Errorf("deliver answer: %w", err)}
 		}
-		if runner.AgentReachedWorking(agentName) {
-			return true, nil
+		for start := cfg.now(); cfg.now().Sub(start) < resumeTimeout; cfg.sleep(resumePoll) {
+			st, n, err := runner.AgentTurn(agentName)
+			if err != nil {
+				logf("drain: [%s] cannot read agent %s state (%v) — still waiting", iss.Number, agentName, err)
+				continue
+			}
+			switch {
+			case st == statusGone:
+				logf("drain: [%s] agent %s is gone — it cannot take the answer", iss.Number, agentName)
+				return false, &askFailure{"error", fmt.Errorf("agent %s is gone before the answer was delivered", agentName)}
+			case st == "working" || st == "blocked" || n > seq:
+				return true, nil
+			}
 		}
-		logf("drain: [%s] agent %s still idle after answer — retrying", iss.Number, agentName)
+		logf("drain: [%s] agent %s has not resumed after the answer — retrying", iss.Number, agentName)
 	}
 	return false, &askFailure{"error", fmt.Errorf("agent %s never resumed after the answer (3 attempts)", agentName)}
 }
