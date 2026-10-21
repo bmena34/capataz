@@ -34,11 +34,20 @@ type Config struct {
 	// Out is where drain writes status messages. Defaults to os.Stdout.
 	Out io.Writer
 
+	// StallMinutes is how long a working agent may go without a file change in
+	// its worktree before the operator is notified (0 = 15). From config
+	// drain.stall_minutes.
+	StallMinutes int
+
 	// askPoll is how often an asking issue's status is re-read (default 15s);
-	// now/sleep are the clock (default time.Now/time.Sleep). Tests inject fakes.
-	askPoll time.Duration
-	now     func() time.Time
-	sleep   func(time.Duration)
+	// stallPoll is how often a working agent's worktree is scanned (default
+	// 60s); now/sleep are the clock (default time.Now/time.Sleep) and walk finds
+	// a worktree's newest mtime (default newestMtime). Tests inject fakes.
+	askPoll   time.Duration
+	stallPoll time.Duration
+	now       func() time.Time
+	sleep     func(time.Duration)
+	walk      func(root string) (time.Time, error)
 }
 
 // IssueResult records the outcome of dispatching a single issue.

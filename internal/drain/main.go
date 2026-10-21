@@ -29,6 +29,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/bmena34/capataz/internal/config"
 )
 
 // Run parses args and runs the command; it is `capataz drain`.
@@ -100,6 +102,7 @@ func Run(args []string) error {
 		RepoPath:        repo,
 		DryRun:          *dryRun,
 		Out:             os.Stdout,
+		StallMinutes:    config.Load().DrainFor(repo).StallMinutes,
 	}
 
 	return Drain(cfg, runner)

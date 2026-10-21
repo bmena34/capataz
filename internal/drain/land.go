@@ -43,7 +43,7 @@ func mergeBack(cfg Config, runner Runner, iss WaveIssue, workspaceID string, log
 		}
 
 		budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
-		fixStatus, _, err := waitAgent(cfg, runner, fixName, basePaneID, fmt.Sprintf("%s %s fix-conflict", cfg.Feature, iss.Number), iss.Number, budget, logf)
+		fixStatus, _, err := waitAgent(cfg, runner, fixName, basePaneID, fmt.Sprintf("%s %s fix-conflict", cfg.Feature, iss.Number), iss.Number, budget, nil, logf)
 		if err != nil {
 			return fmt.Errorf("fix-conflict agent wait: %w", err)
 		}
