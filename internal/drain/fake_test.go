@@ -1,7 +1,9 @@
 package drain
 
 import (
+	"strconv"
 	"sync"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,17 @@ type fakeRunner struct {
 
 	// issueStatus maps issue path -> IssueStatus result (absent = "claimed").
 	issueStatus map[string]string
+
+	// issueStatusSeq maps issue path -> successive IssueStatus results, consumed
+	// one per call; when exhausted, issueStatus (or "claimed") applies.
+	issueStatusSeq map[string][]string
+
+	// answers maps issue path -> successive IssueAnswer results (last repeats).
+	answers map[string][]string
+
+	// clock, when set, advances by waitElapsed on every AgentWait.
+	clock       *fakeClock
+	waitElapsed time.Duration
 
 	mu    sync.Mutex
 	calls []fakeCall
@@ -93,10 +106,41 @@ func (f *fakeRunner) WorktreeDirty(path string) (bool, error) {
 
 func (f *fakeRunner) IssueStatus(repo, path string) (string, error) {
 	f.record("IssueStatus", repo, path)
+	f.mu.Lock()
+	if seq := f.issueStatusSeq[path]; len(seq) > 0 {
+		f.issueStatusSeq[path] = seq[1:]
+		f.mu.Unlock()
+		return seq[0], nil
+	}
+	f.mu.Unlock()
 	if s, ok := f.issueStatus[path]; ok {
 		return s, nil
 	}
 	return "claimed", nil
+}
+
+func (f *fakeRunner) IssueQuestion(path string) (string, error) {
+	f.record("IssueQuestion", path)
+	return "which table?", nil
+}
+
+func (f *fakeRunner) IssueAnswer(path string) (string, error) {
+	f.record("IssueAnswer", path)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seq := f.answers[path]
+	if len(seq) == 0 {
+		return "", nil
+	}
+	if len(seq) > 1 {
+		f.answers[path] = seq[1:]
+	}
+	return seq[0], nil
+}
+
+func (f *fakeRunner) Notify(title, body string) error {
+	f.record("Notify", title, body)
+	return nil
 }
 
 func (f *fakeRunner) DeleteBranch(repo, branch string) error {
@@ -155,13 +199,45 @@ func (f *fakeRunner) ClosePane(paneID string) error {
 }
 
 func (f *fakeRunner) AgentWait(target string, timeoutMS int) (string, error) {
-	f.record("AgentWait", target)
+	f.record("AgentWait", target, strconv.Itoa(timeoutMS))
+	if f.clock != nil {
+		f.clock.advance(f.waitElapsed)
+	}
 	if f.agentWaitStatus != nil {
 		if s, ok := f.agentWaitStatus[target]; ok {
 			return s, nil
 		}
 	}
 	return "done", nil
+}
+
+// fakeClock is a manual clock for Config.now / Config.sleep.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// callsOf returns the calls matching op, in order.
+func callsOf(calls []fakeCall, op string) []fakeCall {
+	var out []fakeCall
+	for _, c := range calls {
+		if c.Op == op {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // countCalls counts how many calls match the given operation.

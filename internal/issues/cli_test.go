@@ -87,6 +87,9 @@ func TestAskAnswerRoundTrip(t *testing.T) {
 	if got, _, _ := LatestAnswer(path); got != "email" {
 		t.Errorf("LatestAnswer after second round = %q, want %q", got, "email")
 	}
+	if got, ok, err := LatestQuestion(path); err != nil || !ok || got != "And the column?" {
+		t.Errorf("LatestQuestion = %q, %v, %v, want %q", got, ok, err, "And the column?")
+	}
 }
 
 func TestAnswerRefusesWhenNotAsking(t *testing.T) {
