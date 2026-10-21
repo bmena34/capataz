@@ -16,6 +16,7 @@ import (
 	"github.com/bmena34/capataz/internal/issues"
 	"github.com/bmena34/capataz/internal/issueview"
 	"github.com/bmena34/capataz/internal/paths"
+	"github.com/bmena34/capataz/internal/tfscan"
 	"github.com/bmena34/capataz/internal/usageview"
 )
 
@@ -44,6 +45,9 @@ func main() {
 		run(func() error { return issueview.Run(cwd) })
 	case "drain":
 		run(func() error { return drain.Run(args[1:]) })
+	case "tf":
+		// Exit codes are part of the contract: 0 clean, 1 findings, 2 error.
+		os.Exit(tfscan.Run(args[1:]))
 	case "usage":
 		run(runUsage)
 	case "usage-view":
@@ -116,6 +120,7 @@ usage:
   capataz issues [dir]        full-screen backlog viewer for the repo at dir (default cwd)
   capataz issue …             manage the .scratch backlog: claim/resolve/status/comment/list/new/waves (used by skills)
   capataz drain [flags] <f>   drain feature f's backlog: dispatch parallel-safe waves of agents via herdr
+  capataz tf check [flags]    Terraform race checks vs open PRs, sibling worktrees, base (exit 0/1/2)
   capataz usage               print the plan-usage gauge (reads Keychain token; unofficial endpoint)
   capataz usage-view [flags]  live plan-usage + per-agent context popup (herdr usage pane)
   capataz trust-dir <path>    pre-seed Claude folder-trust for path
