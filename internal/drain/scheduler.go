@@ -98,6 +98,9 @@ func Drain(cfg Config, runner Runner) error {
 				failed[res.Issue.Path]++
 				logf("drain: [%s] BLOCKED — operator attention required (path: %s)",
 					res.Issue.Number, res.Issue.Path)
+				if res.Err != nil {
+					logf("drain: [%s] reason: %v", res.Issue.Number, res.Err)
+				}
 			case "timeout":
 				failed[res.Issue.Path]++
 				logf("drain: [%s] TIMEOUT after %dms — operator attention required (path: %s)",

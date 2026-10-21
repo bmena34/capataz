@@ -1,6 +1,7 @@
 package drain
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,6 +58,24 @@ func TestParseAgentWait_Herdr095(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("agent_status %q: parseAgentWait = %q, %v; want %q", status, got, err, want)
 		}
+	}
+}
+
+// herdr 0.9.5 prints wait failures to stderr (stdout empty, exit 1). A timed-out
+// stall-poll slice must read as timeout, not a hard error that ends the dispatch.
+func TestParseAgentWait_Herdr095ErrorsOnStderr(t *testing.T) {
+	exit1 := errors.New("exit status 1")
+	for stderr, want := range map[string]string{
+		`{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:wait"}`: "timeout",
+		`{"error":{"code":"agent_not_found","message":"agent target x not found"},"id":"cli:agent:wait"}`:   statusGone,
+	} {
+		got, err := parseAgentWait("a", nil, []byte(stderr+"\n"), exit1)
+		if err != nil || got != want {
+			t.Errorf("stderr %s: parseAgentWait = %q, %v; want %q", stderr, got, err, want)
+		}
+	}
+	if _, err := parseAgentWait("a", nil, []byte("boom"), exit1); err == nil {
+		t.Error("non-JSON stderr with a failed exit: want an error")
 	}
 }
 

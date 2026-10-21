@@ -511,12 +511,18 @@ func (r *realRunner) agentWait(target string, timeoutMS int, until ...string) (s
 }
 
 // parseAgentWait maps `herdr agent wait` output to the state it stopped on,
-// with idle folded into done. herdr reports failures (timeout, missing agent)
-// as a JSON error on stdout with a non-zero exit, so the error code is read
-// before the exit status.
+// with idle folded into done. herdr 0.9.5 reports failures (timeout, missing
+// agent) as a JSON error on stderr with a non-zero exit, so the error code is
+// read, from stdout or else stderr, before the exit status.
 func parseAgentWait(target string, out, stderr []byte, runErr error) (string, error) {
 	var result agentWaitResult
 	jsonErr := json.Unmarshal(out, &result)
+	if (jsonErr != nil || result.Error == nil && result.Result == nil) && len(stderr) > 0 {
+		var errResult agentWaitResult
+		if json.Unmarshal(stderr, &errResult) == nil && errResult.Error != nil {
+			result, jsonErr = errResult, nil
+		}
+	}
 	if jsonErr == nil && result.Error != nil {
 		switch result.Error.Code {
 		case "timeout":
