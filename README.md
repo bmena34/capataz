@@ -345,6 +345,10 @@ make uninstall                     # removes /usr/local/bin/capataz
 
 The config and the global `.scratch/` ignore stay, so an existing backlog is never exposed to a commit.
 
+## Contributing
+
+capataz is a personal project, shared as-is. It isn't accepting issues or pull requests. You're welcome to clone or fork it and adapt it for your own setup.
+
 ## License
 
 [MIT](LICENSE)
