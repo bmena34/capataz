@@ -1,6 +1,7 @@
 package drain
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,6 +39,32 @@ func TestAgentWait_ErrorCodes(t *testing.T) {
 				t.Errorf("AgentWait = %q, %v; want %q, err=%v", got, err, tc.want, tc.wantErr)
 			}
 		})
+	}
+}
+
+// herdr095Wait is a captured herdr 0.9.5 `agent wait` success, with the
+// agent_status swapped per case. The state lives in result.agent.agent_status.
+const herdr095Wait = `{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"109adbc7-7ab3-48ec-a72d-6f8d152d5720"},"agent_status":"%s","completion_seq":87,"cwd":"/Users/me/.herdr/worktrees/capataz/f-13","focused":false,"foreground_cwd":"/Users/me/.herdr/worktrees/capataz/f-13","interactive_ready":true,"name":"drain-f-13","pane_id":"wJ:p1","revision":4,"state_change_seq":188,"tab_id":"wJ:t1","terminal_id":"term_65e614698f88014","terminal_title":"◐ Agent wait","terminal_title_stripped":"Agent wait","tokens":{"context":"[███░░░░░░░] 26%% · 53k"},"workspace_id":"wJ"},"type":"agent_info"}}`
+
+func TestParseAgentWait_Herdr095(t *testing.T) {
+	for status, want := range map[string]string{
+		"done":    "done",
+		"idle":    "done",
+		"blocked": "blocked",
+		"working": "working",
+	} {
+		got, err := parseAgentWait("a", []byte(fmt.Sprintf(herdr095Wait, status)), nil, nil)
+		if err != nil || got != want {
+			t.Errorf("agent_status %q: parseAgentWait = %q, %v; want %q", status, got, err, want)
+		}
+	}
+}
+
+// AgentUnblocked must surface a resumed worker as working, not done.
+func TestAgentUnblocked_Working(t *testing.T) {
+	got, err := stubHerdr(t, fmt.Sprintf(herdr095Wait, "working"), 0).AgentUnblocked("a", 1000)
+	if err != nil || got != "working" {
+		t.Errorf("AgentUnblocked = %q, %v; want working", got, err)
 	}
 }
 
