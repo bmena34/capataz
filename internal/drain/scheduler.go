@@ -189,10 +189,14 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		return fail(status, err)
 	}
 
+	agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
+	var paneID string
+
 	// After the agent has run, the worktree may hold work that exists nowhere
-	// else (uncommitted edits, or a needs-info question). failSafe never tears
-	// that down: it returns a blocked result and keeps worktree + branch. Only a
-	// clean worktree on a still-unanswered issue falls through to failClean.
+	// else (uncommitted edits, a needs-info question, or a question asked in
+	// chat). failSafe never tears that down: it returns a blocked result and
+	// keeps worktree + branch. Only a clean worktree on an issue the agent never
+	// claimed falls through to failClean.
 	failSafe := func(status string, cause error) IssueResult {
 		dirty, derr := runner.WorktreeDirty(checkoutPath)
 		if derr != nil {
@@ -212,6 +216,13 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 		case dirty:
 			logf("drain: [%s] worktree %s has uncommitted or untracked changes — keeping it and branch %s", iss.Number, checkoutPath, iss.Branch)
 			return fail("blocked", fmt.Errorf("worktree has uncommitted changes (%v); kept at %s", cause, checkoutPath))
+		case st == issues.StatusClaimed:
+			logf("drain: [%s] agent %s (pane %s) ended with the issue still claimed — it may have asked in chat; keeping worktree %s and branch %s", iss.Number, agentName, paneID, checkoutPath, iss.Branch)
+			title := fmt.Sprintf("capataz: %s %s stopped while claimed", cfg.Feature, iss.Number)
+			if err := runner.Notify(title, fmt.Sprintf("Agent %s may have asked in chat — check pane %s.", agentName, paneID)); err != nil {
+				logf("drain: [%s] notification failed: %v", iss.Number, err)
+			}
+			return fail("blocked", fmt.Errorf("issue still claimed with no commits (%v); agent may have asked in chat — pane %s, worktree kept at %s", cause, paneID, checkoutPath))
 		}
 		return failClean(status, cause)
 	}
@@ -225,7 +236,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	}
 
 	// Resolve the pane ID in the new workspace.
-	paneID, err := runner.PaneList(workspaceID)
+	paneID, err = runner.PaneList(workspaceID)
 	if err != nil {
 		return failClean("error", fmt.Errorf("pane list workspace=%s: %w", workspaceID, err))
 	}
@@ -233,7 +244,6 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// Step c: start a Claude agent running /capataz-work in the worktree pane and
 	// reliably deliver the task (retrying if a fresh claude drops the first prompt).
 	// capataz-work claims, implements, commits on the branch, and resolves.
-	agentName := fmt.Sprintf("drain-%s-%s", cfg.Feature, iss.Number)
 	prompt := workPrompt(iss)
 	if err := startAgentWithTask(runner, agentName, paneID, prompt, cfg.SkipPermissions, iss.Number, logf); err != nil {
 		return failSafe("error", err)
@@ -272,7 +282,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	// branch; if the branch has no commits ahead of base, the agent did nothing
 	// (e.g. it refused an already-claimed issue, or errored). An empty branch would
 	// otherwise merge as a no-op ("already up to date") and look like success, so
-	// treat zero commits as a failed issue — clean up, don't merge.
+	// never merge zero commits; failSafe decides whether to keep or clean up.
 	ahead, err := runner.CommitsAhead(cfg.RepoPath, iss.Branch)
 	if err != nil {
 		return failSafe("error", fmt.Errorf("verify commits on %s: %w", iss.Branch, err))
