@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmena34/capataz/internal/issues"
 )
@@ -152,6 +153,15 @@ func startAgentWithTask(runner Runner, name, paneID, prompt string, skipPerms bo
 // owns claim → implement → resolve (and refuses a pre-claimed issue). The drain
 // only verifies the agent actually produced commits, then merges.
 func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...any), mergeMu *sync.Mutex) IssueResult {
+	if cfg.askPoll <= 0 {
+		cfg.askPoll = 15 * time.Second
+	}
+	if cfg.now == nil {
+		cfg.now = time.Now
+	}
+	if cfg.sleep == nil {
+		cfg.sleep = time.Sleep
+	}
 	fail := func(status string, err error) IssueResult {
 		return IssueResult{Issue: iss, Status: status, Err: err}
 	}
@@ -194,7 +204,7 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 			logf("drain: [%s] cannot read issue status (%v) — keeping worktree %s", iss.Number, serr, checkoutPath)
 			return fail("error", fmt.Errorf("%w (worktree %s kept: status read failed: %v)", cause, checkoutPath, serr))
 		}
-		st = strings.ToLower(strings.TrimSpace(st))
+		st = normStatus(st)
 		switch {
 		case st == issues.StatusNeedsInfo || st == issues.StatusReadyForHuman:
 			logf("drain: [%s] issue is %s — it needs an answer; keeping worktree %s and branch %s", iss.Number, st, checkoutPath, iss.Branch)
@@ -231,13 +241,31 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 
 	// Step d: wait for the agent on the unfocused pane. blocked/timeout are
 	// needs-operator-attention: surface them, leave the worktree, do not merge.
-	logf("drain: [%s] waiting for agent %s (timeout=%dms)", iss.Number, agentName, cfg.AgentTimeoutMS)
-	status, err := runner.AgentWait(agentName, cfg.AgentTimeoutMS)
-	if err != nil {
-		return failSafe("error", fmt.Errorf("agent wait: %w", err))
-	}
-	if status != "done" {
-		return fail(status, nil) // leave the worktree for the operator to inspect
+	// An agent that ended its turn with the issue `asking` is waiting on the
+	// operator: wait for the answer, deliver it, and wait on the agent again.
+	// Time spent asking does not count against the timeout.
+	budget := time.Duration(cfg.AgentTimeoutMS) * time.Millisecond
+	for {
+		logf("drain: [%s] waiting for agent %s (timeout=%dms)", iss.Number, agentName, budget.Milliseconds())
+		start := cfg.now()
+		status, err := runner.AgentWait(agentName, int(budget.Milliseconds()))
+		budget -= cfg.now().Sub(start)
+		if err != nil {
+			return failSafe("error", fmt.Errorf("agent wait: %w", err))
+		}
+		if status != "done" && status != "idle" {
+			return fail(status, nil) // leave the worktree for the operator to inspect
+		}
+		delivered, res := awaitAnswer(cfg, runner, iss, agentName, logf)
+		if res != nil {
+			return failSafe(res.status, res.err)
+		}
+		if !delivered {
+			break
+		}
+		if budget <= 0 {
+			return fail("timeout", nil)
+		}
 	}
 
 	// Step e: verify the agent actually produced work. capataz-work commits on the
@@ -268,6 +296,71 @@ func dispatchOne(cfg Config, runner Runner, iss WaveIssue, logf func(string, ...
 	return IssueResult{Issue: iss, Status: "done"}
 }
 
+// askFailure is an awaitAnswer outcome that ends the dispatch via failSafe.
+type askFailure struct {
+	status string
+	err    error
+}
+
+// awaitAnswer handles an agent that ended its turn with its issue `asking`:
+// it notifies the operator, polls the issue until it leaves `asking`, and, if
+// the operator answered (back to `claimed`), prompts the same agent with the
+// answer. delivered=false means the issue was not asking — carry on to commit
+// verification. Any other status the issue moves to ends the dispatch.
+func awaitAnswer(cfg Config, runner Runner, iss WaveIssue, agentName string, logf func(string, ...any)) (delivered bool, fail *askFailure) {
+	st, err := runner.IssueStatus(cfg.RepoPath, iss.Path)
+	if err != nil {
+		logf("drain: [%s] cannot read issue status (%v) — assuming it is not asking", iss.Number, err)
+		return false, nil
+	}
+	if normStatus(st) != issues.StatusAsking {
+		return false, nil
+	}
+
+	question, err := runner.IssueQuestion(iss.Path)
+	if err != nil {
+		logf("drain: [%s] cannot read the question (%v)", iss.Number, err)
+	}
+	logf("drain: [%s] QUESTION: %s", iss.Number, question)
+	logf("drain: [%s] answer with: capataz issue answer %s \"…\"", iss.Number, iss.Path)
+	title := fmt.Sprintf("capataz: %s %s has a question", cfg.Feature, iss.Number)
+	if err := runner.Notify(title, question); err != nil {
+		logf("drain: [%s] notification failed: %v", iss.Number, err)
+	}
+
+	for normStatus(st) == issues.StatusAsking {
+		cfg.sleep(cfg.askPoll)
+		if st, err = runner.IssueStatus(cfg.RepoPath, iss.Path); err != nil {
+			logf("drain: [%s] cannot read issue status (%v) — still waiting", iss.Number, err)
+			st = issues.StatusAsking
+		}
+	}
+	st = normStatus(st)
+	if st != issues.StatusClaimed {
+		logf("drain: [%s] issue moved from asking to %s — no longer waiting", iss.Number, st)
+		return false, &askFailure{"blocked", fmt.Errorf("issue moved from asking to %s", st)}
+	}
+
+	answer, err := runner.IssueAnswer(iss.Path)
+	if err != nil {
+		return false, &askFailure{"error", fmt.Errorf("read answer: %w", err)}
+	}
+	logf("drain: [%s] delivering answer to agent %s", iss.Number, agentName)
+	prompt := fmt.Sprintf("Your question on %s was answered: %s. Continue the issue.", iss.Path, answer)
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := runner.AgentPrompt(agentName, prompt); err != nil {
+			return false, &askFailure{"error", fmt.Errorf("deliver answer: %w", err)}
+		}
+		if runner.AgentReachedWorking(agentName) {
+			return true, nil
+		}
+		logf("drain: [%s] agent %s still idle after answer — retrying", iss.Number, agentName)
+	}
+	return false, &askFailure{"error", fmt.Errorf("agent %s never resumed after the answer (3 attempts)", agentName)}
+}
+
+func normStatus(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
 // printDryRun prints the planned dispatch for the first wave without executing
 // anything. It is the safe manual-verification path.
 func printDryRun(cfg Config, batch []WaveIssue, round int) {
@@ -295,6 +388,8 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 		fmt.Fprintf(cfg.Out, "               (capataz-work claims → implements → commits → resolves)\n")
 		fmt.Fprintf(cfg.Out, "      cmd[5] : herdr agent wait %s --until done --until blocked --timeout %d\n",
 			agentName, cfg.AgentTimeoutMS)
+		fmt.Fprintf(cfg.Out, "               (issue asking → herdr notification show; wait for\n")
+		fmt.Fprintf(cfg.Out, "                capataz issue answer %s \"…\", then prompt the answer and wait again)\n", iss.Path)
 		fmt.Fprintf(cfg.Out, "      cmd[6] : git -C %s rev-list --count HEAD..%s   (verify >= 1 commit)\n",
 			cfg.RepoPath, iss.Branch)
 		fmt.Fprintf(cfg.Out, "      cmd[7] : git -C %s merge --no-ff %s\n", cfg.RepoPath, iss.Branch)
@@ -310,6 +405,7 @@ func printDryRun(cfg Config, batch []WaveIssue, round int) {
 // branch has no new commits.
 func workPrompt(iss WaveIssue) string {
 	return fmt.Sprintf("run /capataz-work on the issue at %s. You are in an isolated git worktree on branch %s: "+
-		"commit your work on this branch when you resolve, and do not merge or switch branches — the drain merges it back.",
-		iss.Path, iss.Branch)
+		"commit your work on this branch when you resolve, and do not merge or switch branches — the drain merges it back. "+
+		"If you need an operator decision, run `capataz issue ask %s \"<question with options>\"` and end your turn; never ask in chat.",
+		iss.Path, iss.Branch, iss.Path)
 }

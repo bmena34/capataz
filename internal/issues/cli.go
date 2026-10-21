@@ -390,6 +390,16 @@ func answerCLI(path, answer string) error {
 // issue file, and false if there is none. An answer runs from its marker to the
 // next question/answer marker or "## " heading.
 func LatestAnswer(path string) (string, bool, error) {
+	return latestEntry(path, answerMarker)
+}
+
+// LatestQuestion is LatestAnswer for the last agent question.
+func LatestQuestion(path string) (string, bool, error) {
+	return latestEntry(path, questionMarker)
+}
+
+// latestEntry returns the last question or answer entry opened by marker.
+func latestEntry(path, marker string) (string, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false, err
@@ -398,10 +408,10 @@ func LatestAnswer(path string) (string, bool, error) {
 	found, in := false, false
 	for _, line := range strings.Split(string(data), "\n") {
 		switch {
-		case strings.HasPrefix(line, answerMarker):
-			cur = []string{strings.TrimPrefix(line, answerMarker)}
+		case strings.HasPrefix(line, marker):
+			cur = []string{strings.TrimPrefix(line, marker)}
 			found, in = true, true
-		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, "## "):
+		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, answerMarker), strings.HasPrefix(line, "## "):
 			in = false
 		case in:
 			cur = append(cur, line)

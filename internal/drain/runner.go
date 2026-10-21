@@ -44,8 +44,16 @@ type Runner interface {
 
 	// IssueStatus returns the issue file's current Status: (lowercased), read
 	// from the backlog under repo. The drain uses it to tell "agent stopped to
-	// ask a question" (needs-info / ready-for-human) from "agent did nothing".
+	// ask a question" (asking, needs-info, ready-for-human) from "agent did nothing".
 	IssueStatus(repo, path string) (string, error)
+
+	// IssueQuestion / IssueAnswer return the latest agent question / operator
+	// answer recorded on the issue file (capataz issue ask / answer), or "".
+	IssueQuestion(path string) (string, error)
+	IssueAnswer(path string) (string, error)
+
+	// Notify raises an operator notification (`herdr notification show`).
+	Notify(title, body string) error
 
 	// DeleteBranch deletes <branch> in repo — cleanup after a failed dispatch.
 	DeleteBranch(repo, branch string) error
@@ -203,6 +211,24 @@ func (r *realRunner) IssueStatus(repo, path string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("issue %s not found in backlog %s", path, repo)
+}
+
+func (r *realRunner) IssueQuestion(path string) (string, error) {
+	q, _, err := issues.LatestQuestion(path)
+	return q, err
+}
+
+func (r *realRunner) IssueAnswer(path string) (string, error) {
+	a, _, err := issues.LatestAnswer(path)
+	return a, err
+}
+
+func (r *realRunner) Notify(title, body string) error {
+	out, err := exec.Command(r.herdrBin, "notification", "show", title, "--body", body, "--sound", "request").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("herdr notification show: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // DeleteBranch deletes <branch> in repo (git -C repo branch -D). Used to clean

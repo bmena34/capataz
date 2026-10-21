@@ -2,6 +2,7 @@ package drain
 
 import (
 	"io"
+	"time"
 )
 
 // Config holds all knobs for the drain orchestrator.
@@ -32,6 +33,12 @@ type Config struct {
 
 	// Out is where drain writes status messages. Defaults to os.Stdout.
 	Out io.Writer
+
+	// askPoll is how often an asking issue's status is re-read (default 15s);
+	// now/sleep are the clock (default time.Now/time.Sleep). Tests inject fakes.
+	askPoll time.Duration
+	now     func() time.Time
+	sleep   func(time.Duration)
 }
 
 // IssueResult records the outcome of dispatching a single issue.
