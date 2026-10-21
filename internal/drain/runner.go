@@ -400,6 +400,9 @@ const statusGone = "gone"
 // agentWaitResult parses the subset of herdr agent wait output we need.
 type agentWaitResult struct {
 	Result *struct {
+		Agent *struct {
+			AgentStatus string `json:"agent_status"`
+		} `json:"agent"`
 		Status string `json:"status"`
 		State  string `json:"state"`
 	} `json:"result"`
@@ -431,8 +434,18 @@ func (r *realRunner) agentWait(target string, timeoutMS int, until ...string) (s
 	}
 	args = append(args, "--timeout", fmt.Sprintf("%d", timeoutMS))
 	out, err := exec.Command(r.herdrBin, args...).Output()
-	// herdr reports failures (timeout, missing agent) as a JSON error on stdout
-	// with a non-zero exit, so read the error code before the exit status.
+	var stderr []byte
+	if ee, ok := err.(*exec.ExitError); ok {
+		stderr = ee.Stderr
+	}
+	return parseAgentWait(target, out, stderr, err)
+}
+
+// parseAgentWait maps `herdr agent wait` output to the state it stopped on,
+// with idle folded into done. herdr reports failures (timeout, missing agent)
+// as a JSON error on stdout with a non-zero exit, so the error code is read
+// before the exit status.
+func parseAgentWait(target string, out, stderr []byte, runErr error) (string, error) {
 	var result agentWaitResult
 	jsonErr := json.Unmarshal(out, &result)
 	if jsonErr == nil && result.Error != nil {
@@ -444,19 +457,21 @@ func (r *realRunner) agentWait(target string, timeoutMS int, until ...string) (s
 		}
 		return "error", fmt.Errorf("herdr agent wait %s: %s: %s", target, result.Error.Code, result.Error.Message)
 	}
-	if err != nil {
-		var stderr []byte
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = ee.Stderr
-		}
-		return "error", fmt.Errorf("herdr agent wait %s: %w\noutput: %s%s", target, err, out, stderr)
+	if runErr != nil {
+		return "error", fmt.Errorf("herdr agent wait %s: %w\noutput: %s%s", target, runErr, out, stderr)
 	}
 	if jsonErr != nil {
 		// Non-JSON or partial output — treat as done if command succeeded
 		return "done", nil
 	}
 	if result.Result != nil {
-		s := result.Result.Status
+		var s string
+		if result.Result.Agent != nil {
+			s = result.Result.Agent.AgentStatus // herdr 0.9+
+		}
+		if s == "" {
+			s = result.Result.Status
+		}
 		if s == "" {
 			s = result.Result.State
 		}
