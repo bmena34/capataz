@@ -64,6 +64,7 @@ const (
 	StatusReadyForHuman = "ready-for-human" // triaged: needs a human, not an agent
 	StatusWontfix       = "wontfix"         // terminal: decided not to do
 	StatusClaimed       = "claimed"         // an agent is working it
+	StatusAsking        = "asking"          // a claimed issue's agent is waiting on an operator answer
 	StatusResolved      = "resolved"        // terminal: implemented
 
 	// Done aliases: everyday terminal statuses treated the same as resolved.
@@ -99,6 +100,7 @@ var statuses = map[string]statusInfo{
 	StatusReadyForHuman: {Bucket: BucketTodo, Label: "HUMAN"},
 	StatusNeedsInfo:     {Bucket: BucketTodo, Label: "NEEDS-INFO"},
 	StatusClaimed:       {Bucket: BucketDoing, Label: "CLAIMED"},
+	StatusAsking:        {Bucket: BucketDoing, Label: "ASKING"},
 	StatusResolved:      {Bucket: BucketDone, Label: "DONE"},
 	StatusDone:          {Bucket: BucketDone, Label: "DONE"},
 	StatusClosed:        {Bucket: BucketDone, Label: "DONE"},
