@@ -52,8 +52,9 @@ type fakeRunner struct {
 	// one per call; when exhausted, issueStatus (or "claimed") applies.
 	issueStatusSeq map[string][]string
 
-	// answers maps issue path -> successive IssueAnswer results (last repeats).
-	answers map[string][]string
+	// answers maps issue path -> successive IssueAnswer results (last repeats;
+	// absent = no answers). The drain reads one before starting the agent.
+	answers map[string][]fakeAnswer
 
 	// agentWaitSeq maps agent name -> successive AgentWait results, consumed one
 	// per call; when exhausted, agentWaitStatus (or "done") applies.
@@ -143,18 +144,24 @@ func (f *fakeRunner) IssueQuestion(path string) (string, error) {
 	return "which table?", nil
 }
 
-func (f *fakeRunner) IssueAnswer(path string) (string, error) {
+// fakeAnswer is one IssueAnswer result: the latest answer and the answer count.
+type fakeAnswer struct {
+	text string
+	n    int
+}
+
+func (f *fakeRunner) IssueAnswer(path string) (string, int, error) {
 	f.record("IssueAnswer", path)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	seq := f.answers[path]
 	if len(seq) == 0 {
-		return "", nil
+		return "", 0, nil
 	}
 	if len(seq) > 1 {
 		f.answers[path] = seq[1:]
 	}
-	return seq[0], nil
+	return seq[0].text, seq[0].n, nil
 }
 
 func (f *fakeRunner) Notify(title, body string) error {

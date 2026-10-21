@@ -43,7 +43,7 @@ func TestDrain_AskingWaitsAndDeliversAnswer(t *testing.T) {
 	runner := &fakeRunner{
 		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
 		issueStatusSeq: map[string][]string{askPath: {"asking", "asking", "claimed"}},
-		answers:        map[string][]string{askPath: {"cookies"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"cookies", 1}}},
 		clock:          clock,
 	}
 	out := &strings.Builder{}
@@ -100,7 +100,7 @@ func TestDrain_TwoQuestionsBothDelivered(t *testing.T) {
 	runner := &fakeRunner{
 		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
 		issueStatusSeq: map[string][]string{askPath: {"asking", "claimed", "asking", "claimed"}},
-		answers:        map[string][]string{askPath: {"first", "second"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"first", 1}, {"second", 2}}},
 		clock:          clock,
 	}
 	out := &strings.Builder{}
@@ -122,13 +122,69 @@ func TestDrain_TwoQuestionsBothDelivered(t *testing.T) {
 	}
 }
 
+// The operator answers while the agent is still working: by the time it ends
+// its turn the issue is back to claimed. The answer must still be delivered.
+func TestDrain_EarlyAnswerDelivered(t *testing.T) {
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"cookies", 1}}},
+		clock:          clock,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	got := answerPrompts(runner.calls)
+	if len(got) != 1 || !strings.Contains(got[0], "answered: cookies.") {
+		t.Errorf("answer prompts = %q", got)
+	}
+	if n := countCalls(runner.calls, "AgentWait"); n != 2 {
+		t.Errorf("AgentWait calls: got %d, want 2 (wait, answer, wait again)", n)
+	}
+	waits := 0
+	for _, c := range runner.calls {
+		switch c.Op {
+		case "AgentWait":
+			waits++
+		case "CommitsAhead":
+			if waits < 2 {
+				t.Errorf("commits verified after the first done, before the answer was delivered")
+			}
+		}
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+}
+
+// Answers already on the issue before the agent started are not re-delivered.
+func TestDrain_OldAnswerNotRedelivered(t *testing.T) {
+	clock := &fakeClock{}
+	runner := &fakeRunner{
+		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
+		answers:        map[string][]fakeAnswer{askPath: {{"old", 1}}},
+		clock:          clock,
+	}
+	out := &strings.Builder{}
+	if err := Drain(askCfg(clock, out), runner); err != nil {
+		t.Fatalf("Drain: %v\n%s", err, out)
+	}
+	if got := answerPrompts(runner.calls); len(got) != 0 {
+		t.Errorf("answer prompts = %q, want none", got)
+	}
+	if n := countCalls(runner.calls, "Merge"); n != 1 {
+		t.Errorf("Merge calls: got %d, want 1", n)
+	}
+}
+
 func TestDrain_AskingTimeExcludedFromTimeout(t *testing.T) {
 	clock := &fakeClock{}
 	runner := &fakeRunner{
 		wavesResponses: [][]byte{oneIssueWave(), emptyWave("f")},
 		// Two hour-long polls while asking — far past the 10s agent timeout.
 		issueStatusSeq: map[string][]string{askPath: {"asking", "asking", "claimed"}},
-		answers:        map[string][]string{askPath: {"yes"}},
+		answers:        map[string][]fakeAnswer{askPath: {{}, {"yes", 1}}},
 		clock:          clock,
 		waitElapsed:    3 * time.Second,
 	}

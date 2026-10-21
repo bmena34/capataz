@@ -60,7 +60,7 @@ func TestAskAnswerRoundTrip(t *testing.T) {
 	if !strings.Contains(string(data), "## Comments\n\n"+questionMarker+" Which table?") {
 		t.Errorf("question not under ## Comments:\n%s", data)
 	}
-	if _, ok, _ := LatestAnswer(path); ok {
+	if _, n, _ := LatestAnswer(path); n != 0 {
 		t.Errorf("LatestAnswer found an answer before one was given")
 	}
 
@@ -74,8 +74,8 @@ func TestAskAnswerRoundTrip(t *testing.T) {
 	if got := claimStatus(t, path); got != StatusClaimed {
 		t.Errorf("after answer status = %q, want %q", got, StatusClaimed)
 	}
-	if got, ok, err := LatestAnswer(path); err != nil || !ok || got != "the users table" {
-		t.Errorf("LatestAnswer = %q, %v, %v", got, ok, err)
+	if got, n, err := LatestAnswer(path); err != nil || n != 1 || got != "the users table" {
+		t.Errorf("LatestAnswer = %q, %d, %v", got, n, err)
 	}
 	if after := strings.Join(headerLines(t, path), "\n"); after != before {
 		t.Errorf("non-Status header lines changed:\nbefore:\n%s\nafter:\n%s", before, after)
@@ -84,11 +84,11 @@ func TestAskAnswerRoundTrip(t *testing.T) {
 	// A second round: LatestAnswer returns the newest answer.
 	captureStdout(t, func() error { return askCLI(path, "And the column?") })
 	captureStdout(t, func() error { return answerCLI(path, "email") })
-	if got, _, _ := LatestAnswer(path); got != "email" {
-		t.Errorf("LatestAnswer after second round = %q, want %q", got, "email")
+	if got, n, _ := LatestAnswer(path); got != "email" || n != 2 {
+		t.Errorf("LatestAnswer after second round = %q, %d, want %q, 2", got, n, "email")
 	}
-	if got, ok, err := LatestQuestion(path); err != nil || !ok || got != "And the column?" {
-		t.Errorf("LatestQuestion = %q, %v, %v, want %q", got, ok, err, "And the column?")
+	if got, n, err := LatestQuestion(path); err != nil || n != 2 || got != "And the column?" {
+		t.Errorf("LatestQuestion = %q, %d, %v, want %q", got, n, err, "And the column?")
 	}
 }
 

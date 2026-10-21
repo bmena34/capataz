@@ -397,40 +397,42 @@ func answerCLI(path, answer string) error {
 }
 
 // LatestAnswer returns the text of the last operator answer recorded on an
-// issue file, and false if there is none. An answer runs from its marker to the
-// next question/answer marker or "## " heading.
-func LatestAnswer(path string) (string, bool, error) {
+// issue file and how many answers the file holds (0: none). An answer runs from
+// its marker to the next question/answer marker or "## " heading.
+func LatestAnswer(path string) (string, int, error) {
 	return latestEntry(path, answerMarker)
 }
 
 // LatestQuestion is LatestAnswer for the last agent question.
-func LatestQuestion(path string) (string, bool, error) {
+func LatestQuestion(path string) (string, int, error) {
 	return latestEntry(path, questionMarker)
 }
 
-// latestEntry returns the last question or answer entry opened by marker.
-func latestEntry(path, marker string) (string, bool, error) {
+// latestEntry returns the last question or answer entry opened by marker, and
+// how many such entries there are.
+func latestEntry(path, marker string) (string, int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", false, err
+		return "", 0, err
 	}
 	var cur []string
-	found, in := false, false
+	n, in := 0, false
 	for _, line := range strings.Split(string(data), "\n") {
 		switch {
 		case strings.HasPrefix(line, marker):
 			cur = []string{strings.TrimPrefix(line, marker)}
-			found, in = true, true
+			n++
+			in = true
 		case strings.HasPrefix(line, questionMarker), strings.HasPrefix(line, answerMarker), strings.HasPrefix(line, "## "):
 			in = false
 		case in:
 			cur = append(cur, line)
 		}
 	}
-	if !found {
-		return "", false, nil
+	if n == 0 {
+		return "", 0, nil
 	}
-	return strings.TrimSpace(strings.Join(cur, "\n")), true, nil
+	return strings.TrimSpace(strings.Join(cur, "\n")), n, nil
 }
 
 // appendSection appends "## <heading>\n\n<body>" to a file, adding a leading
