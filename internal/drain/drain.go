@@ -39,6 +39,11 @@ type Config struct {
 	// drain.stall_minutes.
 	StallMinutes int
 
+	// ResumeGraceMS is how long an agent that ended its turn with the issue
+	// still claimed and its work unfinished gets to start working again before
+	// the drain gives up on it (0 = 3 minutes). It comes out of AgentTimeoutMS.
+	ResumeGraceMS int
+
 	// askPoll is how often an asking issue's status is re-read (default 15s);
 	// stallPoll is how often a working agent's worktree is scanned (default
 	// 60s); now/sleep are the clock (default time.Now/time.Sleep) and walk finds

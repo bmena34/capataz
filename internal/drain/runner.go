@@ -105,6 +105,12 @@ type Runner interface {
 	// Returns "working", "done", "timeout", or statusGone.
 	AgentUnblocked(target string, timeoutMS int) (status string, err error)
 
+	// AgentResumed waits for an agent that ended its turn to start another one
+	// on its own (Claude Code wakes it when a background shell finishes):
+	// `herdr agent wait <target> --until working --until blocked --timeout <ms>`.
+	// Returns "working", "blocked", "timeout", or statusGone.
+	AgentResumed(target string, timeoutMS int) (status string, err error)
+
 	// Merge runs `git -C <repo> merge --no-ff <branch>`.
 	// Returns (false, nil) on a clean merge. Returns (true, nil) when the merge
 	// left conflicted files in the working tree (mid-merge state, ready for a
@@ -473,6 +479,10 @@ func (r *realRunner) AgentWait(target string, timeoutMS int) (string, error) {
 
 func (r *realRunner) AgentUnblocked(target string, timeoutMS int) (string, error) {
 	return r.agentWait(target, timeoutMS, "working", "done", "idle")
+}
+
+func (r *realRunner) AgentResumed(target string, timeoutMS int) (string, error) {
+	return r.agentWait(target, timeoutMS, "working", "blocked")
 }
 
 // agentWait runs `herdr agent wait <target> --until <s>... --timeout <ms>` and

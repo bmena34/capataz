@@ -36,8 +36,12 @@ func TestDrain_SingleWaveDone(t *testing.T) {
 	if n := countCalls(runner.calls, "AgentStart"); n != 2 {
 		t.Errorf("AgentStart calls: got %d, want 2", n)
 	}
-	if n := countCalls(runner.calls, "CommitsAhead"); n != 2 {
-		t.Errorf("CommitsAhead calls: got %d, want 2", n)
+	// Two per issue: the turn-end check for unfinished work, then verification.
+	if n := countCalls(runner.calls, "CommitsAhead"); n != 4 {
+		t.Errorf("CommitsAhead calls: got %d, want 4", n)
+	}
+	if n := countCalls(runner.calls, "AgentResumed"); n != 0 {
+		t.Errorf("AgentResumed calls: got %d, want 0 (work was finished)", n)
 	}
 	if n := countCalls(runner.calls, "Merge"); n != 2 {
 		t.Errorf("Merge calls: got %d, want 2", n)

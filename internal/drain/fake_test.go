@@ -64,6 +64,13 @@ type fakeRunner struct {
 	// one per call; when exhausted, "working".
 	unblockSeq map[string][]string
 
+	// resumeSeq maps agent name -> successive AgentResumed results, consumed
+	// one per call; when exhausted, "timeout" (the agent stays idle). onResume,
+	// when set, runs on a "working" result so a test can model the work the
+	// resumed agent then does.
+	resumeSeq map[string][]string
+	onResume  func()
+
 	// clock, when set, advances by waitElapsed on every AgentWait and by
 	// blockedElapsed on every AgentUnblocked.
 	clock          *fakeClock
@@ -309,6 +316,28 @@ func (f *fakeRunner) AgentUnblocked(target string, timeoutMS int) (string, error
 		return s, nil
 	}
 	return "working", nil
+}
+
+func (f *fakeRunner) AgentResumed(target string, timeoutMS int) (string, error) {
+	f.record("AgentResumed", target, strconv.Itoa(timeoutMS))
+	s, ok := f.pop(f.resumeSeq, target)
+	if !ok {
+		if f.clock != nil {
+			f.clock.advance(time.Duration(timeoutMS) * time.Millisecond)
+		}
+		return "timeout", nil
+	}
+	if s == "working" {
+		if t := f.turns; t != nil {
+			f.mu.Lock()
+			t.status = "working"
+			f.mu.Unlock()
+		}
+		if f.onResume != nil {
+			f.onResume()
+		}
+	}
+	return s, nil
 }
 
 // pop consumes the next value of seq[key], if any.

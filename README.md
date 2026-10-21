@@ -136,7 +136,7 @@ capataz issue answer <issue> "cookies"
 - **Blocked** — an agent waiting on a prompt (usually a permission prompt) shows as `blocked` in herdr. The drain notifies once and waits for it to resume, then verifies and merges as usual.
 - **No progress** — an agent herdr reports as working whose worktree has had no file change for `drain.stall_minutes` (default 15) gets one notification naming the pane and worktree. A later change re-arms it. The drain never nudges or kills it.
 - **Timeout** — an agent still running after `--timeout` (default 1h) is notified and left in place, unmerged. Time spent blocked or waiting on an answer doesn't count against it.
-- **Stopped without committing** — an agent that ends its turn with nothing committed is never cleaned up while its worktree has changes or its issue is still `claimed` (it may have asked in chat anyway — you get a notification for that case). The worktree and branch stay for you.
+- **Stopped without committing** — an agent that ends its turn with its issue still `claimed` and nothing committed (or uncommitted changes) gets `--resume-grace` (default 3 minutes, out of `--timeout`) to start working again, since Claude Code wakes an agent whose background shell finishes. If it resumes, the drain waits on it as usual. Otherwise it is never cleaned up while its worktree has changes or its issue is still `claimed` (it may have asked in chat anyway — you get a notification for that case). The worktree and branch stay for you.
 
 > **⚠️ Parallelism belongs to the drain.** Sessions you start by hand run in the repo's own working tree — two of those on one repo at once can clobber each other. To parallelize, let the drain isolate each agent in its own worktree.
 

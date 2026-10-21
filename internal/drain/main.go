@@ -14,6 +14,7 @@
 //
 //	-concurrency  int    max concurrent agents per wave (0 = unlimited, default 3)
 //	-timeout      int    per-agent wait timeout in milliseconds (default 3600000)
+//	-resume-grace int    ms a worker that ended its turn unfinished gets to resume (default 180000)
 //	-skip-perms         pass --dangerously-skip-permissions to dispatched agents
 //	-repo         string repo path for worktree creation (default: cwd)
 //	-branch-prefix string  branch name prefix (overrides config drain.branch_prefix)
@@ -41,6 +42,7 @@ func Run(args []string) error {
 
 	concurrency := fs.Int("concurrency", 3, "max concurrent agents per wave (0 = unlimited)")
 	timeoutMS := fs.Int("timeout", 3_600_000, "per-agent wait timeout in milliseconds")
+	resumeGraceMS := fs.Int("resume-grace", defaultResumeGraceMS, "milliseconds a worker that ended its turn with unfinished work gets to start working again")
 	skipPerms := fs.Bool("skip-perms", false, "pass --dangerously-skip-permissions to dispatched agents")
 	repoPath := fs.String("repo", "", "repo path for worktree creation (default: current directory)")
 	branchPrefix := fs.String("branch-prefix", "", "dispatch branch prefix (default: drain.branch_prefix from config, else empty)")
@@ -100,6 +102,7 @@ func Run(args []string) error {
 		Concurrency:     *concurrency,
 		SkipPermissions: *skipPerms,
 		AgentTimeoutMS:  *timeoutMS,
+		ResumeGraceMS:   *resumeGraceMS,
 		RepoPath:        repo,
 		DryRun:          *dryRun,
 		Out:             os.Stdout,
